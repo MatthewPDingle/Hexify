@@ -8,13 +8,16 @@ from matplotlib.path import Path
 from skimage.color import rgb2lab, lab2rgb
 from sklearn.cluster import KMeans
 import os
+import time
 
 def main(input_image_path, num_palette_colors=16):
+    start_time = time.time() 
+    
     # Load input image
     input_image = cv2.imread(input_image_path)
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
 
-    # Quadruple the resolution of the output image
+    # 16x the resolution of the output image
     output_image_shape = (input_image.shape[0] * 16, input_image.shape[1] * 16, 3)
     output_image = np.zeros(output_image_shape, dtype=np.uint8)
 
@@ -335,10 +338,10 @@ def main(input_image_path, num_palette_colors=16):
     # Save and display the output image
     output_image_path = os.path.splitext(input_image_path)[0] + '_out.png'
     plt.imsave(output_image_path, output_image)
-    plt.figure(figsize=(15, 15))
-    plt.imshow(output_image)
-    plt.axis('off')
-    plt.show()
+        
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"Total execution time: {total_time:.2f} seconds")
 
 # Example usage
 if __name__ == "__main__":
