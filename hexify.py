@@ -11,12 +11,13 @@ import time
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+import hashlib
 
 # Utility functions
 def average_color(image, mask):
     masked = cv2.bitwise_and(image, image, mask=mask)
     avg_color = masked[np.where(mask != 0)].mean(axis=0)
-    return avg_color
+    return np.round(avg_color).astype(int)
 
 def create_hex_mask(center_x, center_y, radius, shape):
     mask = np.zeros(shape, dtype=np.uint8)
@@ -209,7 +210,7 @@ def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_i
     return pattern
 
 def process_hexagon(args):
-    center_x, center_y, hex_radius, output_shape, input_image, sorted_palette = args
+    center_x, center_y, hex_radius, output_shape, input_image, sorted_palette, palette_hash, hexagon_cache, hexagons_dir = args
     if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:
         mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
         scaled_center_x = int(center_x / 16)
@@ -218,8 +219,21 @@ def process_hexagon(args):
 
         input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
         avg_rgb = average_color(input_image, input_mask)
+        avg_rgb_key = tuple(avg_rgb)
 
-        hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_rgb, sorted_palette, input_image)
+        if avg_rgb_key in hexagon_cache:
+            hex_pattern = hexagon_cache[avg_rgb_key]
+            cache_hit = True
+        else:
+            hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_rgb, sorted_palette, input_image)
+            hexagon_cache[avg_rgb_key] = hex_pattern
+            cache_hit = False
+
+            # Save unique hexagon
+            hexagon_filename = f"hexagon_{palette_hash[:6]}_{avg_rgb[0]:03d}_{avg_rgb[1]:03d}_{avg_rgb[2]:03d}.png"
+            hexagon_path = os.path.join(hexagons_dir, hexagon_filename)
+            if not os.path.exists(hexagon_path):
+                plt.imsave(hexagon_path, hex_pattern)
 
         mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2])
         hex_pattern_masked = cv2.bitwise_and(hex_pattern, hex_pattern, mask=mask_pattern)
@@ -229,14 +243,16 @@ def process_hexagon(args):
         x_end = min(center_x + hex_radius, output_shape[1])
         y_end = min(center_y + hex_radius, output_shape[0])
 
-        return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask[y_start:y_end, x_start:x_end])
+        return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask[y_start:y_end, x_start:x_end], cache_hit)
     return None
 
 def create_output_directory(input_image_path):
     base_name = os.path.splitext(os.path.basename(input_image_path))[0]
     output_dir = os.path.join(os.path.dirname(input_image_path), base_name)
     os.makedirs(output_dir, exist_ok=True)
-    return output_dir
+    hexagons_dir = os.path.join(output_dir, 'hexagons')
+    os.makedirs(hexagons_dir, exist_ok=True)
+    return output_dir, hexagons_dir
 
 def main(input_image_path, num_palette_colors=16, num_processes=None):
     start_time = time.time() 
@@ -244,7 +260,7 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     if num_processes is None:
         num_processes = multiprocessing.cpu_count()
     
-    output_dir = create_output_directory(input_image_path)
+    output_dir, hexagons_dir = create_output_directory(input_image_path)
     
     input_image = cv2.imread(input_image_path)
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
@@ -276,27 +292,51 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     sorted_palette_indices = np.argsort(np.mean(palette, axis=1))
     sorted_palette = palette[sorted_palette_indices]
 
+    # Generate palette hash
+    palette_hash = hashlib.sha256(sorted_palette.tobytes()).hexdigest()
+
     palette_image = np.zeros((64, 32 * num_palette_colors, 3), dtype=np.uint8)
     for i, color in enumerate(sorted_palette):
         palette_image[:, i * 32:(i + 1) * 32] = color
-    palette_path = os.path.join(output_dir, 'palette.png')
+    
+    # Modified palette filename
+    palette_filename = f"palette - {palette_hash}.png"
+    palette_path = os.path.join(output_dir, palette_filename)
     plt.imsave(palette_path, palette_image)
     print(f"Palette saved to: {palette_path}")
 
     total_hexes = len(hex_centers)
     
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
-        futures = [executor.submit(process_hexagon, (center_x, center_y, hex_radius, output_image_shape, input_image, sorted_palette)) 
-                   for center_x, center_y in hex_centers]
+    # Use a Manager to create a shared cache
+    with multiprocessing.Manager() as manager:
+        hexagon_cache = manager.dict()
+        cache_hits = manager.Value('i', 0)
         
-        for future in tqdm(as_completed(futures), total=total_hexes, desc="Processing hexagons"):
-            result = future.result()
-            if result:
-                x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
-                hex_slice = output_image[y_start:y_end, x_start:x_end]
-                hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
+        with ProcessPoolExecutor(max_workers=num_processes) as executor:
+            futures = [executor.submit(process_hexagon, (center_x, center_y, hex_radius, output_image_shape, input_image, sorted_palette, palette_hash, hexagon_cache, hexagons_dir)) 
+                       for center_x, center_y in hex_centers]
+            
+            for future in tqdm(as_completed(futures), total=total_hexes, desc="Processing hexagons"):
+                result = future.result()
+                if result:
+                    x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice, cache_hit = result
+                    hex_slice = output_image[y_start:y_end, x_start:x_end]
+                    hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
+                    if cache_hit:
+                        cache_hits.value += 1
 
-    print("\nProcessing complete.")
+        print("\nProcessing complete.")
+        
+        # Performance metrics
+        unique_hexagons = len(hexagon_cache)
+        total_hexagons = total_hexes
+        cache_hit_rate = (cache_hits.value / total_hexagons) * 100
+        estimated_time_saved = (cache_hits.value * 0.1)  # Assuming each hexagon takes about 0.1 seconds to process
+
+        print(f"Number of unique hexagons: {unique_hexagons}")
+        print(f"Total number of hexagons: {total_hexagons}")
+        print(f"Cache hit rate: {cache_hit_rate:.2f}%")
+        print(f"Estimated time saved by caching: {estimated_time_saved:.2f} seconds")
 
     output_image_path = os.path.join(output_dir, 'output.png')
     plt.imsave(output_image_path, output_image)
