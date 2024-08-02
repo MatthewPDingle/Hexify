@@ -8,6 +8,9 @@ from matplotlib.path import Path
 from sklearn.cluster import KMeans
 import os
 import time
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 # Utility functions
 def average_color(image, mask):
@@ -205,8 +208,35 @@ def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_i
 
     return pattern
 
-def main(input_image_path, num_palette_colors=16):
+def process_hexagon(args):
+    center_x, center_y, hex_radius, output_shape, input_image, sorted_palette = args
+    if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:
+        mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
+        scaled_center_x = int(center_x / 16)
+        scaled_center_y = int(center_y / 16)
+        scaled_radius = hex_radius // 16
+
+        input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
+        avg_rgb = average_color(input_image, input_mask)
+
+        hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_rgb, sorted_palette, input_image)
+
+        mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2])
+        hex_pattern_masked = cv2.bitwise_and(hex_pattern, hex_pattern, mask=mask_pattern)
+
+        x_start = max(center_x - hex_radius, 0)
+        y_start = max(center_y - hex_radius, 0)
+        x_end = min(center_x + hex_radius, output_shape[1])
+        y_end = min(center_y + hex_radius, output_shape[0])
+
+        return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask[y_start:y_end, x_start:x_end])
+    return None
+
+def main(input_image_path, num_palette_colors=16, num_processes=None):
     start_time = time.time() 
+    
+    if num_processes is None:
+        num_processes = multiprocessing.cpu_count()
     
     input_image = cv2.imread(input_image_path)
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
@@ -244,35 +274,17 @@ def main(input_image_path, num_palette_colors=16):
     plt.imsave('palette.png', palette_image)
 
     total_hexes = len(hex_centers)
-    for i, (center_x, center_y) in enumerate(hex_centers):
-        if 0 <= center_x - hex_radius < output_image.shape[1] and 0 <= center_y - hex_radius < output_image.shape[0]:
-            mask = create_hex_mask(center_x, center_y, hex_radius, output_image.shape[:2])
-            scaled_center_x = int(center_x / 16)
-            scaled_center_y = int(center_y / 16)
-            scaled_radius = hex_radius // 16
-
-            input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
-            avg_rgb = average_color(input_image, input_mask)
-
-            hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_rgb, sorted_palette, input_image)
-
-            mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2])
-            hex_pattern_masked = cv2.bitwise_and(hex_pattern, hex_pattern, mask=mask_pattern)
-
-            x_start = max(center_x - hex_radius, 0)
-            y_start = max(center_y - hex_radius, 0)
-            x_end = min(center_x + hex_radius, output_image.shape[1])
-            y_end = min(center_y + hex_radius, output_image.shape[0])
-
-            hex_slice = output_image[y_start:y_end, x_start:x_end]
-            pattern_slice = hex_pattern_masked[:y_end - y_start, :x_end - x_start]
-            mask_slice = mask[y_start:y_end, x_start:x_end]
-
-            hex_slice[mask_slice != 0] = pattern_slice[mask_slice != 0]
-
-        progress = (i + 1) / total_hexes * 100
-        sys.stdout.write(f"\rProgress: {progress:.2f}%")
-        sys.stdout.flush()
+    
+    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+        futures = [executor.submit(process_hexagon, (center_x, center_y, hex_radius, output_image_shape, input_image, sorted_palette)) 
+                   for center_x, center_y in hex_centers]
+        
+        for future in tqdm(as_completed(futures), total=total_hexes, desc="Processing hexagons"):
+            result = future.result()
+            if result:
+                x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
+                hex_slice = output_image[y_start:y_end, x_start:x_end]
+                hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
 
     print("\nProcessing complete.")
 
@@ -284,13 +296,18 @@ def main(input_image_path, num_palette_colors=16):
     print(f"Total execution time: {total_time:.2f} seconds")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python script.py <input_image_path> [num_palette_colors]")
-        sys.exit(1)
+    import argparse
     
-    input_image_path = sys.argv[1]
-    num_palette_colors = int(sys.argv[2]) if len(sys.argv) > 2 else 16
-    if num_palette_colors < 5:
+    parser = argparse.ArgumentParser(description="Generate hexagonal pattern from input image.")
+    parser.add_argument("input_image_path", help="Path to the input image file")
+    parser.add_argument("-c", "--colors", type=int, default=16, help="Number of colors in the palette (default: 16)")
+    parser.add_argument("-p", "--processes", type=int, default=None, 
+                        help="Number of processes to use (default: number of CPU cores)")
+    
+    args = parser.parse_args()
+    
+    if args.colors < 5:
         print("Minimum color palette size must be at least 5. Setting it to 5.")
-        num_palette_colors = 5
-    main(input_image_path, num_palette_colors)
+        args.colors = 5
+    
+    main(args.input_image_path, args.colors, args.processes)
