@@ -232,11 +232,19 @@ def process_hexagon(args):
         return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask[y_start:y_end, x_start:x_end])
     return None
 
+def create_output_directory(input_image_path):
+    base_name = os.path.splitext(os.path.basename(input_image_path))[0]
+    output_dir = os.path.join(os.path.dirname(input_image_path), base_name)
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
 def main(input_image_path, num_palette_colors=16, num_processes=None):
     start_time = time.time() 
     
     if num_processes is None:
         num_processes = multiprocessing.cpu_count()
+    
+    output_dir = create_output_directory(input_image_path)
     
     input_image = cv2.imread(input_image_path)
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
@@ -271,7 +279,9 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     palette_image = np.zeros((64, 32 * num_palette_colors, 3), dtype=np.uint8)
     for i, color in enumerate(sorted_palette):
         palette_image[:, i * 32:(i + 1) * 32] = color
-    plt.imsave('palette.png', palette_image)
+    palette_path = os.path.join(output_dir, 'palette.png')
+    plt.imsave(palette_path, palette_image)
+    print(f"Palette saved to: {palette_path}")
 
     total_hexes = len(hex_centers)
     
@@ -288,8 +298,9 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
 
     print("\nProcessing complete.")
 
-    output_image_path = os.path.splitext(input_image_path)[0] + '_out.png'
+    output_image_path = os.path.join(output_dir, 'output.png')
     plt.imsave(output_image_path, output_image)
+    print(f"Output image saved to: {output_image_path}")
         
     end_time = time.time()
     total_time = end_time - start_time
