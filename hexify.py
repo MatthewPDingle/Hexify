@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import math
 from matplotlib.patches import RegularPolygon
 from matplotlib.path import Path
-from skimage.color import rgb2lab, lab2rgb
 from sklearn.cluster import KMeans
 import os
 import time
@@ -55,23 +54,16 @@ def main(input_image_path, num_palette_colors=16):
         mask = cv2.fillPoly(mask, [coords], 255)
         return mask
 
-    # Function to clamp LAB values to their valid ranges
-    def clamp_lab(lab_color):
-        L = np.clip(lab_color[0], 0, 100)
-        a = np.clip(lab_color[1], -128, 127)
-        b = np.clip(lab_color[2], -128, 127)
-        return np.array([L, a, b])
-
-    # Function to find the closest color in the palette to a given LAB color
-    def closest_palette_color(avg_lab, palette_lab, avoid_lab=None):
+    # Function to find the closest color in the palette to a given RGB color
+    def closest_palette_color(avg_rgb, palette_rgb, avoid_rgb=None):
         min_distance = float('inf')
         closest_color = None
 
-        for color in palette_lab:
-            if avoid_lab is not None and any(np.array_equal(color, avoid_color) for avoid_color in avoid_lab):
+        for color in palette_rgb:
+            if avoid_rgb is not None and any(np.array_equal(color, avoid_color) for avoid_color in avoid_rgb):
                 continue
             
-            distance = np.linalg.norm(avg_lab - color)
+            distance = np.linalg.norm(avg_rgb - color)
             if distance < min_distance:
                 min_distance = distance
                 closest_color = color
@@ -79,25 +71,24 @@ def main(input_image_path, num_palette_colors=16):
         return closest_color
 
     # Function to select a second color for the pattern
-    def select_color_2(avg_lab, palette_lab, color_1, color_1_area, color_2_area, bw_color, bw_color_area):
+    def select_color_2(avg_rgb, palette_rgb, color_1, color_1_area, color_2_area, bw_color, bw_color_area):
         min_distance = float('inf')
         best_color_2 = None
         
-        # Ensure color_1 and bw_color are NumPy arrays
         color_1 = np.array(color_1)
         bw_color = np.array(bw_color)
         
-        for color in palette_lab:
+        for color in palette_rgb:
             if np.array_equal(color, color_1):
                 continue
             
-            color = np.array(color)  # Ensure the current palette color is a NumPy array
+            color = np.array(color)
             
-            # Calculate the mixed LAB color
-            mixed_lab = (color_1_area * color_1 + color_2_area * color + bw_color_area * bw_color) / (color_1_area + color_2_area + bw_color_area)
+            # Calculate the mixed RGB color
+            mixed_rgb = (color_1_area * color_1 + color_2_area * color + bw_color_area * bw_color) / (color_1_area + color_2_area + bw_color_area)
             
-            # Calculate the distance to the average LAB color
-            distance = np.linalg.norm(avg_lab - mixed_lab)
+            # Calculate the distance to the average RGB color
+            distance = np.linalg.norm(avg_rgb - mixed_rgb)
             
             if distance < min_distance:
                 min_distance = distance
@@ -147,12 +138,12 @@ def main(input_image_path, num_palette_colors=16):
         return pattern, hex_area
 
     # Helper function to fill in even layers
-    def fill_even_layer(i, avg_lab, palette_lab, radius, layer_radii, avoid_lab, layer_areas, pattern, input_image, center_x, center_y, bw_color):
-        L, a, b = avg_lab
+    def fill_even_layer(i, avg_rgb, palette_rgb, radius, layer_radii, avoid_rgb, layer_areas, pattern, input_image, center_x, center_y, bw_color):
+        brightness = np.mean(avg_rgb)
         if i == 6:
-            diameter = 256 - abs(L - 50) * (256 - 192) / 50
+            diameter = 256 - abs(brightness - 128) * (256 - 192) / 128
         else:
-            diameter = (layer_radii[i + 1] * 2) - abs(L - 50) * (64) / 50
+            diameter = (layer_radii[i + 1] * 2) - abs(brightness - 128) * (64) / 128
         hex_radius = int(diameter // 2)
         inner_hexagon = RegularPolygon((radius, radius), numVertices=6, radius=hex_radius, orientation=np.pi / 2)
         inner_coords = inner_hexagon.get_verts().astype(int)
@@ -165,15 +156,14 @@ def main(input_image_path, num_palette_colors=16):
 
         input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
         avg_rgb = average_color(input_image, input_mask)
-        avg_lab = rgb2lab(np.array([[avg_rgb]], dtype=np.float32) / 255.0)[0][0]  # Proper scaling
 
-        # Select the color from the palette that most closely matches the avg_lab
-        color_1 = closest_palette_color(avg_lab, palette_lab, avoid_lab)
-        avoid_lab.append(color_1)
-        dist_1 = np.linalg.norm(color_1 - avg_lab)
+        # Select the color from the palette that most closely matches the avg_rgb
+        color_1 = closest_palette_color(avg_rgb, palette_rgb, avoid_rgb)
+        avoid_rgb.append(color_1)
+        dist_1 = np.linalg.norm(color_1 - avg_rgb)
 
         # Find the next color from the palette that is most similar to color_1
-        color_adj = min(palette_lab, key=lambda color: np.linalg.norm(color - color_1) if not np.array_equal(color, color_1) else float('inf'))
+        color_adj = min(palette_rgb, key=lambda color: np.linalg.norm(color - color_1) if not np.array_equal(color, color_1) else float('inf'))
         dist_adj = np.linalg.norm(color_1 - color_adj)
 
         # Determine the percentage dist_1 is of dist_adj
@@ -188,13 +178,13 @@ def main(input_image_path, num_palette_colors=16):
         # Sum of even_area and odd_area
         layer_area = even_area + odd_area
 
-        # Select color 2 from the palette that most closely matches the avg_lab
-        color_2 = select_color_2(avg_lab, palette_lab, color_1, even_area, odd_area, bw_color, layer_areas[i + 1] - layer_area)
-        avoid_lab.append(color_2)
+        # Select color 2 from the palette that most closely matches the avg_rgb
+        color_2 = select_color_2(avg_rgb, palette_rgb, color_1, even_area, odd_area, bw_color, layer_areas[i + 1] - layer_area)
+        avoid_rgb.append(color_2)
 
-        # Convert LAB colors to RGB for filling polygons
-        color_1_rgb = tuple(map(int, (lab2rgb(clamp_lab(color_1).reshape(1, 1, 3)) * 255).astype(np.uint8)[0][0]))
-        color_2_rgb = tuple(map(int, (lab2rgb(clamp_lab(color_2).reshape(1, 1, 3)) * 255).astype(np.uint8)[0][0]))
+        # Convert RGB colors to tuples for filling polygons
+        color_1_rgb = tuple(map(int, color_1))
+        color_2_rgb = tuple(map(int, color_2))
 
         # Draw the 12 zones with alternating colors
         angle_offset = 30 - (even_angle / 2)  # Start from half the interior angle of the first zone
@@ -250,7 +240,7 @@ def main(input_image_path, num_palette_colors=16):
         return pattern, layer_area
 
     # Function to create concentric hexagons with patterns
-    def create_hex_pattern(center_x, center_y, radius, avg_lab, palette_lab):
+    def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb):
         pattern = np.zeros((2 * radius, 2 * radius, 3), dtype=np.uint8)
         hexagon = RegularPolygon((radius, radius), numVertices=6, radius=radius, orientation=np.pi / 2)
         coords = hexagon.get_verts().astype(int)
@@ -258,8 +248,8 @@ def main(input_image_path, num_palette_colors=16):
         layer_areas = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 1: 0}
         layer_radii = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 1: 0}
         
-        bw_color = (0, 0, 0) if avg_lab[0] < 50 else (255, 255, 255)
-        avoid_lab = []
+        bw_color = (0, 0, 0) if np.mean(avg_rgb) < 128 else (255, 255, 255)
+        avoid_rgb = []
 
         for i in range(7, 0, -1):  # Iterate from outer to inner layer
             if i % 2 == 1: # Odd layers
@@ -268,7 +258,7 @@ def main(input_image_path, num_palette_colors=16):
                 pattern, layer_area = fill_odd_layer(pattern, radius, hex_radius, bw_color)
                 layer_areas[i] = layer_area
             elif i % 2 == 0: # Even layers
-                pattern, layer_area = fill_even_layer(i, avg_lab, palette_lab, radius, layer_radii, avoid_lab, layer_areas, pattern, input_image, center_x, center_y, bw_color)
+                pattern, layer_area = fill_even_layer(i, avg_rgb, palette_rgb, radius, layer_radii, avoid_rgb, layer_areas, pattern, input_image, center_x, center_y, bw_color)
                 layer_areas[i] = layer_area
 
         return pattern
@@ -280,11 +270,8 @@ def main(input_image_path, num_palette_colors=16):
     kmeans = KMeans(n_clusters=num_palette_colors, random_state=42).fit(pixels)
     palette = kmeans.cluster_centers_
 
-    # Convert the palette to LAB color space
-    palette_lab = rgb2lab(palette.reshape(1, -1, 3) / 255.0).reshape(-1, 3)  # Normalize to [0, 1] range
-
-    # Sort the palette by their L values in the LAB color space
-    sorted_palette_indices = np.argsort(palette_lab[:, 0])
+    # Sort the palette by their brightness values
+    sorted_palette_indices = np.argsort(np.mean(palette, axis=1))
     sorted_palette = palette[sorted_palette_indices]
 
     # Create and save the palette image
@@ -307,10 +294,9 @@ def main(input_image_path, num_palette_colors=16):
 
             input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
             avg_rgb = average_color(input_image, input_mask)
-            avg_lab = rgb2lab(np.array([[avg_rgb]], dtype=np.float32) / 255.0)[0][0]  # Proper scaling
 
-            # Create a pattern using the average LAB color
-            hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_lab, palette_lab)
+            # Create a pattern using the average RGB color
+            hex_pattern = create_hex_pattern(center_x, center_y, hex_radius, avg_rgb, sorted_palette)
 
             # Mask the pattern to the hex shape
             mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2])
