@@ -218,16 +218,17 @@ def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_i
 def process_hexagon(args):
     center_x, center_y, hex_radius, output_shape, input_image, sorted_palette, palette_hash, hexagon_cache, hexagons_dir = args
     if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:      
-        scaled_center_x = int(center_x / 16)
-        scaled_center_y = int(center_y / 16)
-        scaled_radius = hex_radius // 16
+        input_center_x = int(center_x / 16)
+        input_center_y = int(center_y / 16)
+        input_hex_radius = hex_radius // 16
 
-        input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
+        input_mask = create_hex_mask(input_center_x, input_center_y, input_hex_radius, input_image.shape[:2])
         avg_rgb = average_color(input_image, input_mask)
         avg_rgb_key = tuple(avg_rgb)
 
         bw_rgb = 0 if np.mean(avg_rgb) < 128 else 255
         mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
+        #print(center_x, center_y)
 
         if avg_rgb_key in hexagon_cache:
             hex_pattern = hexagon_cache[avg_rgb_key]
@@ -280,7 +281,8 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     hex_diameter = 256
     hex_radius = hex_diameter // 2
     hex_width = 2 * hex_radius
-    hex_height = math.sqrt((hex_radius * hex_radius) - (hex_radius / 2 * hex_radius / 2)) * 2
+    #hex_height = math.sqrt((hex_radius * hex_radius) - (hex_radius / 2 * hex_radius / 2)) * 2
+    hex_height = hex_width * (math.sqrt(3)/2)
     cols = int(output_image.shape[1] // (hex_width - (hex_width / 4))) + 1
     rows = int(output_image.shape[0] // (hex_height * 0.75)) + 1
     rows = int(rows * .75)
@@ -288,7 +290,7 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     hex_centers = [
         (
             int((hex_width - 64) * col) - 128,
-            int(hex_height * 1 * row + (0.5 * hex_height if col % 2 else 0)) - 128
+            int(hex_height * row + (0.5 * hex_height if col % 2 else 0)) - 128
         )
         for row in range(rows)
         for col in range(cols)
