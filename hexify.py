@@ -19,7 +19,11 @@ def average_color(image, mask):
     return np.round(avg_color).astype(int)
 
 def create_hex_mask(center_x, center_y, radius, shape, bw_rgb=0):
-    mask = np.full(shape, bw_rgb, dtype=np.uint8)
+    if bw_rgb == 0:
+        mask = np.zeros(shape, dtype=np.uint8)
+    else:
+        mask = np.full(shape, bw_rgb, dtype=np.uint8)
+
     hexagon = RegularPolygon((center_x, center_y), numVertices=6, radius=radius, orientation=np.pi / 2)
     coords = hexagon.get_verts()
     coords = np.clip(coords, [0, 0], [shape[1] - 1, shape[0] - 1]).astype(int)
@@ -187,7 +191,9 @@ def fill_even_layer(i, avg_rgb, palette_rgb, radius, layer_radii, avoid_rgb, lay
 
 def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_image):
     bw_rgb = 0 if np.mean(avg_rgb) < 128 else 255
-    pattern = np.full((2 * radius, 2 * radius, 3), bw_rgb, dtype=np.uint8)
+    pattern = np.zeros((2 * radius, 2 * radius, 3), dtype=np.uint8)
+    if bw_rgb != 0:
+        pattern = np.full((2 * radius, 2 * radius, 3), bw_rgb, dtype=np.uint8)
     hexagon = RegularPolygon((radius, radius), numVertices=6, radius=radius, orientation=np.pi / 2)
     coords = hexagon.get_verts().astype(int)
 
