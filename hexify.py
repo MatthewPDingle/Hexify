@@ -298,9 +298,7 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     palette_image = np.zeros((64, 32 * num_palette_colors, 3), dtype=np.uint8)
     for i, color in enumerate(sorted_palette):
         palette_image[:, i * 32:(i + 1) * 32] = color
-    
-    # Modified palette filename
-    palette_filename = f"palette - {palette_hash}.png"
+    palette_filename = f"Palette - {palette_hash}.png"
     palette_path = os.path.join(output_dir, palette_filename)
     plt.imsave(palette_path, palette_image)
     print(f"Palette saved to: {palette_path}")
