@@ -1,5 +1,4 @@
 import cv2
-import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import math
@@ -19,8 +18,8 @@ def average_color(image, mask):
     avg_color = masked[np.where(mask != 0)].mean(axis=0)
     return np.round(avg_color).astype(int)
 
-def create_hex_mask(center_x, center_y, radius, shape):
-    mask = np.zeros(shape, dtype=np.uint8)
+def create_hex_mask(center_x, center_y, radius, shape, bw_rgb=0):
+    mask = np.full(shape, bw_rgb, dtype=np.uint8)
     hexagon = RegularPolygon((center_x, center_y), numVertices=6, radius=radius, orientation=np.pi / 2)
     coords = hexagon.get_verts()
     coords = np.clip(coords, [0, 0], [shape[1] - 1, shape[0] - 1]).astype(int)
@@ -187,7 +186,8 @@ def fill_even_layer(i, avg_rgb, palette_rgb, radius, layer_radii, avoid_rgb, lay
     return pattern, layer_area
 
 def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_image):
-    pattern = np.zeros((2 * radius, 2 * radius, 3), dtype=np.uint8)
+    bw_rgb = 0 if np.mean(avg_rgb) < 128 else 255
+    pattern = np.full((2 * radius, 2 * radius, 3), bw_rgb, dtype=np.uint8)
     hexagon = RegularPolygon((radius, radius), numVertices=6, radius=radius, orientation=np.pi / 2)
     coords = hexagon.get_verts().astype(int)
 
@@ -211,8 +211,7 @@ def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_i
 
 def process_hexagon(args):
     center_x, center_y, hex_radius, output_shape, input_image, sorted_palette, palette_hash, hexagon_cache, hexagons_dir = args
-    if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:
-        mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
+    if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:      
         scaled_center_x = int(center_x / 16)
         scaled_center_y = int(center_y / 16)
         scaled_radius = hex_radius // 16
@@ -220,6 +219,9 @@ def process_hexagon(args):
         input_mask = create_hex_mask(scaled_center_x, scaled_center_y, scaled_radius, input_image.shape[:2])
         avg_rgb = average_color(input_image, input_mask)
         avg_rgb_key = tuple(avg_rgb)
+
+        bw_rgb = 0 if np.mean(avg_rgb) < 128 else 255
+        mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
 
         if avg_rgb_key in hexagon_cache:
             hex_pattern = hexagon_cache[avg_rgb_key]
@@ -235,7 +237,8 @@ def process_hexagon(args):
             if not os.path.exists(hexagon_path):
                 plt.imsave(hexagon_path, hex_pattern)
 
-        mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2])
+        # Passing the mask the black or white color of the hexagon fixes the aliasing bug
+        mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2], bw_rgb)
         hex_pattern_masked = cv2.bitwise_and(hex_pattern, hex_pattern, mask=mask_pattern)
 
         x_start = max(center_x - hex_radius, 0)
