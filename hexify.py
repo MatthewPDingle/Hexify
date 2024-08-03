@@ -217,7 +217,15 @@ def create_hex_pattern(center_x, center_y, radius, avg_rgb, palette_rgb, input_i
 
 def process_hexagon(args):
     center_x, center_y, hex_radius, output_shape, input_image, sorted_palette, palette_hash, hexagon_cache, hexagons_dir = args
-    if 0 <= center_x - hex_radius < output_shape[1] and 0 <= center_y - hex_radius < output_shape[0]:      
+    
+    # Calculate the boundaries of the hexagon
+    x_start = max(center_x - hex_radius, 0)
+    y_start = max(center_y - hex_radius, 0)
+    x_end = min(center_x + hex_radius, output_shape[1])
+    y_end = min(center_y + hex_radius, output_shape[0])
+    
+    # Only process if the hexagon is at least partially within the image
+    if x_start < x_end and y_start < y_end:
         input_center_x = int(center_x / 16)
         input_center_y = int(center_y / 16)
         input_hex_radius = hex_radius // 16
@@ -227,8 +235,10 @@ def process_hexagon(args):
         avg_rgb_key = tuple(avg_rgb)
 
         bw_rgb = 0 if np.mean(avg_rgb) < 128 else 255
-        mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
-        #print(center_x, center_y)
+        
+        # Create a full-sized mask and then crop it
+        full_mask = create_hex_mask(center_x, center_y, hex_radius, output_shape[:2])
+        mask = full_mask[y_start:y_end, x_start:x_end]
 
         if avg_rgb_key in hexagon_cache:
             hex_pattern = hexagon_cache[avg_rgb_key]
@@ -244,16 +254,21 @@ def process_hexagon(args):
             if not os.path.exists(hexagon_path):
                 plt.imsave(hexagon_path, hex_pattern)
 
-        # Passing the mask the black or white color of the hexagon fixes the aliasing bug
-        mask_pattern = create_hex_mask(hex_radius, hex_radius, hex_radius, hex_pattern.shape[:2], bw_rgb)
-        hex_pattern_masked = cv2.bitwise_and(hex_pattern, hex_pattern, mask=mask_pattern)
+        # Crop the hex_pattern to match the mask size
+        pattern_y_start = y_start - (center_y - hex_radius)
+        pattern_x_start = x_start - (center_x - hex_radius)
+        pattern_y_end = pattern_y_start + (y_end - y_start)
+        pattern_x_end = pattern_x_start + (x_end - x_start)
+        
+        hex_pattern_cropped = hex_pattern[pattern_y_start:pattern_y_end, pattern_x_start:pattern_x_end]
 
-        x_start = max(center_x - hex_radius, 0)
-        y_start = max(center_y - hex_radius, 0)
-        x_end = min(center_x + hex_radius, output_shape[1])
-        y_end = min(center_y + hex_radius, output_shape[0])
+        # Ensure the mask and hex_pattern_cropped have the same shape
+        assert mask.shape == hex_pattern_cropped.shape[:2], f"Shape mismatch: mask {mask.shape}, hex_pattern_cropped {hex_pattern_cropped.shape[:2]}"
 
-        return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask[y_start:y_end, x_start:x_end], cache_hit)
+        # Apply the mask
+        hex_pattern_masked = cv2.bitwise_and(hex_pattern_cropped, hex_pattern_cropped, mask=mask)
+
+        return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask, cache_hit)
     return None
 
 def create_output_directory(input_image_path):
@@ -278,19 +293,20 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
     output_image_shape = (input_image.shape[0] * 16, input_image.shape[1] * 16, 3)
     output_image = np.zeros(output_image_shape, dtype=np.uint8)
 
-    hex_diameter = 256
-    hex_radius = hex_diameter // 2
-    hex_width = 2 * hex_radius
-    #hex_height = math.sqrt((hex_radius * hex_radius) - (hex_radius / 2 * hex_radius / 2)) * 2
-    hex_height = hex_width * (math.sqrt(3)/2)
-    cols = int(output_image.shape[1] // (hex_width - (hex_width / 4))) + 1
-    rows = int(output_image.shape[0] // (hex_height * 0.75)) + 1
-    rows = int(rows * .75)
+    hex_width = 256
+    hex_height = round(hex_width * (math.sqrt(3)/2))
+    hex_radius = hex_width // 2    
+
+    hex_horizontal_spacing = hex_width * 0.75
+    hex_vertical_spacing = hex_height
+
+    cols = int(output_image.shape[1] / hex_horizontal_spacing) + 2 # Add 2 to ensure enough coverage on left & right edges
+    rows = int(output_image.shape[0] / hex_horizontal_spacing) + 2 # And 2 for enough coverage top & bottom
 
     hex_centers = [
         (
-            int((hex_width - 64) * col) - 128,
-            int(hex_height * row + (0.5 * hex_height if col % 2 else 0)) - 128
+            int(hex_horizontal_spacing * col),
+            int(hex_vertical_spacing * row + (0.5 * hex_vertical_spacing if col % 2 else 0))
         )
         for row in range(rows)
         for col in range(cols)
@@ -345,7 +361,6 @@ def main(input_image_path, num_palette_colors=16, num_processes=None):
         print(f"Number of unique hexagons: {unique_hexagons}")
         print(f"Total number of hexagons: {total_hexagons}")
         print(f"Cache hit rate: {cache_hit_rate:.2f}%")
-        print(f"Estimated time saved by caching: {estimated_time_saved:.2f} seconds")
 
     output_image_path = os.path.join(output_dir, 'output.png')
     plt.imsave(output_image_path, output_image)
