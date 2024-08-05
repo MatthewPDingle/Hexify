@@ -5,35 +5,61 @@ from matplotlib.patches import RegularPolygon
 from matplotlib.path import Path
 import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm
 import os
 import hashlib
 from sklearn.cluster import KMeans
 
 class HexagonProcessor:
-    def __init__(self, num_palette_colors=16, num_processes=None):
+    def __init__(self, num_palette_colors=16, num_processes=None, hexagons_dir=None):
         self.num_palette_colors = num_palette_colors
         self.num_processes = num_processes or os.cpu_count()
         self.hexagon_cache = {}
         self.palette = None
         self.palette_hash = None
+        self.hexagons_dir = hexagons_dir
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.debug_counter = 0
+        self.hex_centers = None
 
-    def process_image(self, input_image):
+    def process_image(self, input_image, pbar=None):
         self.input_image = input_image
-        self.generate_palette()
-        self.setup_hexagon_grid()
-        return self.process_hexagons()
+        if self.palette is None:
+            self.generate_palette(input_image)
+        if self.hex_centers is None:
+            self.setup_hexagon_grid(input_image.shape)
+        return self.process_hexagons(pbar)
+    
+    def generate_palette(self, image):
+        # Resize the image if it's too large to speed up processing
+        max_pixels = 1000000  # 1 million pixels
+        height, width = image.shape[:2]
+        if height * width > max_pixels:
+            scale = np.sqrt(max_pixels / (height * width))
+            new_height = int(height * scale)
+            new_width = int(width * scale)
+            image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
-    def generate_palette(self):
-        pixels = self.input_image.reshape(-1, 3)
-        kmeans = KMeans(n_clusters=self.num_palette_colors, random_state=42).fit(pixels)
+        pixels = image.reshape(-1, 3)
+        
+        # Use a fixed random state for reproducibility
+        kmeans = KMeans(n_clusters=self.num_palette_colors, random_state=42, n_init=10)
+        kmeans.fit(pixels)
+        
         palette = kmeans.cluster_centers_
+        
+        # Sort the palette by brightness for consistency
         sorted_palette_indices = np.argsort(np.mean(palette, axis=1))
         self.palette = palette[sorted_palette_indices]
+        
+        # Round the palette values to integers for consistent hashing
+        self.palette = np.round(self.palette).astype(int)
+        
+        # Generate hash from the sorted, rounded palette
         self.palette_hash = hashlib.sha256(self.palette.tobytes()).hexdigest()
 
-    def setup_hexagon_grid(self):
-        self.output_shape = (self.input_image.shape[0] * 16, self.input_image.shape[1] * 16, 3)
+    def setup_hexagon_grid(self, input_shape):
+        self.output_shape = (input_shape[0] * 16, input_shape[1] * 16, 3)
         self.hex_width = 256
         self.hex_height = round(self.hex_width * (math.sqrt(3)/2))
         self.hex_radius = self.hex_width // 2
@@ -50,24 +76,29 @@ class HexagonProcessor:
             for col in range(cols)
         ]
 
-    def process_hexagons(self):
+    def process_hexagons(self, pbar=None):
         output_image = np.zeros(self.output_shape, dtype=np.uint8)
         total_hexes = len(self.hex_centers)
         
+        processed_hexes = 0
         with ProcessPoolExecutor(max_workers=self.num_processes) as executor:
             futures = [executor.submit(self.process_hexagon, center_x, center_y) 
                        for center_x, center_y in self.hex_centers]
             
-            for future in tqdm(as_completed(futures), total=total_hexes, desc="Processing hexagons"):
+            for future in as_completed(futures):
                 result = future.result()
                 if result:
                     x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
                     hex_slice = output_image[y_start:y_end, x_start:x_end]
                     hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
+                
+                processed_hexes += 1
+                if pbar:
+                    pbar.update(1)  # Update by 1 for each processed hexagon
 
         return output_image
 
-    def process_hexagon(self, center_x, center_y):
+    def process_hexagon(self, center_x, center_y):       
         x_start = max(center_x - self.hex_radius, 0)
         y_start = max(center_y - self.hex_radius, 0)
         x_end = min(center_x + self.hex_radius, self.output_shape[1])
@@ -80,16 +111,22 @@ class HexagonProcessor:
 
             input_mask = self.create_hex_mask(input_center_x, input_center_y, input_hex_radius, self.input_image.shape[:2])
             avg_rgb = self.average_color(self.input_image, input_mask)
-            avg_rgb_key = tuple(avg_rgb)
+            avg_rgb_key = tuple(map(int, avg_rgb))
 
             full_mask = self.create_hex_mask(center_x, center_y, self.hex_radius, self.output_shape[:2])
             mask = full_mask[y_start:y_end, x_start:x_end]
 
             if avg_rgb_key in self.hexagon_cache:
                 hex_pattern = self.hexagon_cache[avg_rgb_key]
+                self.cache_hits += 1
             else:
                 hex_pattern = self.create_hex_pattern(center_x, center_y, self.hex_radius, avg_rgb)
                 self.hexagon_cache[avg_rgb_key] = hex_pattern
+                self.cache_misses += 1
+                if self.hexagons_dir:
+                    hex_filename = f"{self.palette_hash[:6]}_hexagon_{avg_rgb_key[0]:03d}_{avg_rgb_key[1]:03d}_{avg_rgb_key[2]:03d}.png"
+                    hex_path = os.path.join(self.hexagons_dir, hex_filename)
+                    plt.imsave(hex_path, hex_pattern)
 
             pattern_y_start = y_start - (center_y - self.hex_radius)
             pattern_x_start = x_start - (center_x - self.hex_radius)
@@ -101,6 +138,12 @@ class HexagonProcessor:
 
             return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask)
         return None
+
+    def get_cache_hit_rate(self):
+        total_accesses = self.cache_hits + self.cache_misses
+        if total_accesses == 0:
+            return 0
+        return self.cache_hits / total_accesses
 
     @staticmethod
     def create_hex_mask(center_x, center_y, radius, shape):
@@ -114,7 +157,7 @@ class HexagonProcessor:
     @staticmethod
     def average_color(image, mask):
         masked = cv2.bitwise_and(image, image, mask=mask)
-        avg_color = masked[np.where(mask != 0)].mean(axis=0)
+        avg_color = cv2.mean(masked, mask=mask)[:3]
         return np.round(avg_color).astype(int)
 
     def create_hex_pattern(self, center_x, center_y, radius, avg_rgb):
@@ -213,10 +256,14 @@ class HexagonProcessor:
             dy = p12[1] - p1[1]
 
             length = (dx ** 2 + dy ** 2) ** 0.5
-            dx /= length
-            dy /= length
-
-            p3 = (p12[0] + length_of_shorter_leg * dy, p12[1] - length_of_shorter_leg * dx)
+            if length > 1e-6:  # Add a small threshold to avoid division by very small numbers
+                dx /= length
+                dy /= length
+                p3 = (p12[0] + length_of_shorter_leg * dy, p12[1] - length_of_shorter_leg * dx)
+            else:
+                # If p1 and p2 are essentially the same point, we can't determine p3
+                # In this case, we'll just use p1 for all points
+                p3 = p1
 
             p1 = self.clip_point_to_hexagon(p1, inner_coords)
             p2 = self.clip_point_to_hexagon(p2, inner_coords)
