@@ -1,5 +1,6 @@
-import cv2
+from multiprocessing import Manager, Lock
 import numpy as np
+import cv2
 import matplotlib.pyplot as plt
 from matplotlib.patches import RegularPolygon
 from matplotlib.path import Path
@@ -10,17 +11,24 @@ import hashlib
 from sklearn.cluster import KMeans
 
 class HexagonProcessor:
-    def __init__(self, num_palette_colors=16, num_processes=None, hexagons_dir=None):
+    def __init__(self, num_palette_colors=16, num_processes=None, hexagons_dir=None, chunk_size=32, save_hexagons=True):
         self.num_palette_colors = num_palette_colors
         self.num_processes = num_processes or os.cpu_count()
-        self.hexagon_cache = {}
+        self.hexagons_dir = hexagons_dir
+        self.hex_centers = None
+        self.chunk_size = chunk_size
+        self.save_hexagons = save_hexagons
+
+        # Create a manager for shared objects
+        manager = Manager()
+        self.hexagon_cache = manager.dict()
+        self.cache_hits = manager.Value('i', 0)
+        self.cache_misses = manager.Value('i', 0)
+        self.cache_lock = manager.Lock()
+
+        # Initialize palette and palette_hash
         self.palette = None
         self.palette_hash = None
-        self.hexagons_dir = hexagons_dir
-        self.cache_hits = 0
-        self.cache_misses = 0
-        self.debug_counter = 0
-        self.hex_centers = None
 
     def process_image(self, input_image, pbar=None):
         self.input_image = input_image
@@ -78,72 +86,88 @@ class HexagonProcessor:
 
     def process_hexagons(self, pbar=None):
         output_image = np.zeros(self.output_shape, dtype=np.uint8)
-        total_hexes = len(self.hex_centers)
         
-        processed_hexes = 0
+        # Group hex_centers into chunks
+        hex_center_chunks = [self.hex_centers[i:i + self.chunk_size] for i in range(0, len(self.hex_centers), self.chunk_size)]
+        
         with ProcessPoolExecutor(max_workers=self.num_processes) as executor:
-            futures = [executor.submit(self.process_hexagon, center_x, center_y) 
-                       for center_x, center_y in self.hex_centers]
+            futures = [executor.submit(self.process_hexagon_chunk, chunk) 
+                       for chunk in hex_center_chunks]
             
             for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
-                    hex_slice = output_image[y_start:y_end, x_start:x_end]
-                    hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
+                results = future.result()
+                for result in results:
+                    if result:
+                        x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
+                        hex_slice = output_image[y_start:y_end, x_start:x_end]
+                        hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
                 
-                processed_hexes += 1
                 if pbar:
-                    pbar.update(1)  # Update by 1 for each processed hexagon
+                    pbar.update(self.chunk_size)
 
         return output_image
 
-    def process_hexagon(self, center_x, center_y):       
-        x_start = max(center_x - self.hex_radius, 0)
-        y_start = max(center_y - self.hex_radius, 0)
-        x_end = min(center_x + self.hex_radius, self.output_shape[1])
-        y_end = min(center_y + self.hex_radius, self.output_shape[0])
+    def process_hexagon_chunk(self, centers):
+        local_cache = {}
+        results = []
         
-        if x_start < x_end and y_start < y_end:
-            input_center_x = int(center_x / 16)
-            input_center_y = int(center_y / 16)
-            input_hex_radius = self.hex_radius // 16
-
-            input_mask = self.create_hex_mask(input_center_x, input_center_y, input_hex_radius, self.input_image.shape[:2])
-            avg_rgb = self.average_color(self.input_image, input_mask)
-            avg_rgb_key = tuple(map(int, avg_rgb))
-
-            full_mask = self.create_hex_mask(center_x, center_y, self.hex_radius, self.output_shape[:2])
-            mask = full_mask[y_start:y_end, x_start:x_end]
-
-            if avg_rgb_key in self.hexagon_cache:
-                hex_pattern = self.hexagon_cache[avg_rgb_key]
-                self.cache_hits += 1
-            else:
-                hex_pattern = self.create_hex_pattern(center_x, center_y, self.hex_radius, avg_rgb)
-                self.hexagon_cache[avg_rgb_key] = hex_pattern
-                self.cache_misses += 1
-                if self.hexagons_dir:
-                    hex_filename = f"{self.palette_hash[:6]}_hexagon_{avg_rgb_key[0]:03d}_{avg_rgb_key[1]:03d}_{avg_rgb_key[2]:03d}.png"
-                    hex_path = os.path.join(self.hexagons_dir, hex_filename)
-                    plt.imsave(hex_path, hex_pattern)
-
-            pattern_y_start = y_start - (center_y - self.hex_radius)
-            pattern_x_start = x_start - (center_x - self.hex_radius)
-            pattern_y_end = pattern_y_start + (y_end - y_start)
-            pattern_x_end = pattern_x_start + (x_end - x_start)
+        for center_x, center_y in centers:
+            x_start = max(center_x - self.hex_radius, 0)
+            y_start = max(center_y - self.hex_radius, 0)
+            x_end = min(center_x + self.hex_radius, self.output_shape[1])
+            y_end = min(center_y + self.hex_radius, self.output_shape[0])
             
-            hex_pattern_cropped = hex_pattern[pattern_y_start:pattern_y_end, pattern_x_start:pattern_x_end]
-            hex_pattern_masked = cv2.bitwise_and(hex_pattern_cropped, hex_pattern_cropped, mask=mask)
+            if x_start < x_end and y_start < y_end:
+                input_center_x = int(center_x / 16)
+                input_center_y = int(center_y / 16)
+                input_hex_radius = self.hex_radius // 16
 
-            return (x_start, y_start, x_end, y_end, hex_pattern_masked, mask)
-        return None
+                input_mask = self.create_hex_mask(input_center_x, input_center_y, input_hex_radius, self.input_image.shape[:2])
+                avg_rgb = self.average_color(self.input_image, input_mask)
+                avg_rgb_key = tuple(map(int, avg_rgb))
+
+                if avg_rgb_key in local_cache:
+                    hex_pattern = local_cache[avg_rgb_key]
+                    with self.cache_lock:
+                        self.cache_hits.value += 1
+                elif avg_rgb_key in self.hexagon_cache:
+                    hex_pattern = self.hexagon_cache[avg_rgb_key]
+                    local_cache[avg_rgb_key] = hex_pattern
+                    with self.cache_lock:
+                        self.cache_hits.value += 1
+                else:
+                    hex_pattern = self.create_hex_pattern(center_x, center_y, self.hex_radius, avg_rgb)
+                    local_cache[avg_rgb_key] = hex_pattern
+                    with self.cache_lock:
+                        self.hexagon_cache[avg_rgb_key] = hex_pattern
+                        self.cache_misses.value += 1
+                    if self.save_hexagons and self.hexagons_dir:
+                        hex_filename = f"{self.palette_hash[:6]}_hexagon_{avg_rgb_key[0]:03d}_{avg_rgb_key[1]:03d}_{avg_rgb_key[2]:03d}.png"
+                        hex_path = os.path.join(self.hexagons_dir, hex_filename)
+                        plt.imsave(hex_path, hex_pattern)
+
+                full_mask = self.create_hex_mask(center_x, center_y, self.hex_radius, self.output_shape[:2])
+                mask = full_mask[y_start:y_end, x_start:x_end]
+
+                pattern_y_start = y_start - (center_y - self.hex_radius)
+                pattern_x_start = x_start - (center_x - self.hex_radius)
+                pattern_y_end = pattern_y_start + (y_end - y_start)
+                pattern_x_end = pattern_x_start + (x_end - x_start)
+                
+                hex_pattern_cropped = hex_pattern[pattern_y_start:pattern_y_end, pattern_x_start:pattern_x_end]
+                hex_pattern_masked = cv2.bitwise_and(hex_pattern_cropped, hex_pattern_cropped, mask=mask)
+
+                results.append((x_start, y_start, x_end, y_end, hex_pattern_masked, mask))
+            else:
+                results.append(None)
+        
+        return results
 
     def get_cache_hit_rate(self):
-        total_accesses = self.cache_hits + self.cache_misses
+        total_accesses = self.cache_hits.value + self.cache_misses.value
         if total_accesses == 0:
             return 0
-        return self.cache_hits / total_accesses
+        return self.cache_hits.value / total_accesses
 
     @staticmethod
     def create_hex_mask(center_x, center_y, radius, shape):

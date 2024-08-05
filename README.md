@@ -13,18 +13,32 @@ Claude 3.5 Sonnet was used to write nearly all of the code after the initial rel
 To use the program, run the following command:
 
 ```bash
-python hexify.py <input_image_path> [-c COLORS] [-p PROCESSES]
+python hexify.py <input_path> [-c COLORS] [-p PROCESSES] [--chunk-size CHUNK_SIZE] [--save-hexagons] [--save-frames]
 ```
-- `<input_image_path>`: Path to the input image file.
-- `-c, --colors`: Number of colors in the palette (default: 16, minimum: 5, I recommend 6-32).
+
+- `<input_path>`: Path to the input image or video file.
+- `-c, --colors`: Number of colors in the palette (default: 16, minimum: 5, recommended: 6-32).
 - `-p, --processes`: Number of processes to use (default: number of CPU cores).
+- `--chunk-size`: Number of hexagons to process in each chunk (default: 32).
+- `--save-hexagons`: Save individual hexagon images (default: False).
+- `--save-frames`: Save individual processed frames from video (default: False).
 
-clean.py is a deprecated post-processing script that removed black aliasing between hexagons.  This bug has been fixed and clean.py is no longer needed.
+## Notes
 
-I do not recommend running this on images larger than 1000x1000 pixels since the output size is 16x the size in both dimensions.  Re-size a large image to be much smaller if you want to use a large image.  The samples below were made from a 512x512 image.
+- The program now supports both image and video input.
+- For images, the output size is 16x the size in both dimensions. It's recommended to run this on images no larger than 1000x1000 pixels.
+- For videos, the program will automatically downscale the input if necessary.
+- The clean.py script is no longer needed as the black aliasing bug between hexagons has been fixed.
+
+## Examples
+
+The samples below were made from a 512x512 image.
 
 Here's a section of the output that has been reduced to 50% of its output size.
 ![sample.png](sample.png)
 
 Here's a full image output that has been reduced to 12.5% of its output size.
 ![output.png](output.png)
+
+Video example:
+https://www.youtube.com/watch?v=dx-XbjhDS4w

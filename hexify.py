@@ -19,7 +19,7 @@ def create_output_directory(input_path):
     os.makedirs(hexagons_dir, exist_ok=True)
     return output_dir, frames_dir, hexagons_dir
 
-def process_image(input_image_path, num_palette_colors, num_processes):
+def process_image(input_image_path, num_palette_colors, num_processes, chunk_size=32, save_hexagons=True):
     if not os.path.isfile(input_image_path):
         print(f"Error: The file '{input_image_path}' does not exist.")
         return
@@ -33,7 +33,7 @@ def process_image(input_image_path, num_palette_colors, num_processes):
 
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
 
-    processor = HexagonProcessor(num_palette_colors, num_processes, hexagons_dir)
+    processor = HexagonProcessor(num_palette_colors, num_processes, hexagons_dir, chunk_size, save_hexagons)
     
     # Get the total number of hexagons
     processor.setup_hexagon_grid(input_image.shape)
@@ -64,7 +64,7 @@ def process_image(input_image_path, num_palette_colors, num_processes):
     print(f"Total cache misses: {processor.cache_misses}")
     print(f"Final cache size: {len(processor.hexagon_cache)}")
 
-def process_video(input_video_path, num_palette_colors, num_processes):
+def process_video(input_video_path, num_palette_colors, num_processes, chunk_size=32, save_hexagons=True, save_frames=True):
     if not os.path.isfile(input_video_path):
         print(f"Error: The file '{input_video_path}' does not exist.")
         return
@@ -83,7 +83,7 @@ def process_video(input_video_path, num_palette_colors, num_processes):
     sample_frames = reader.get_frames(num_frames=10)
     combined_image = np.concatenate(sample_frames, axis=1)
     
-    processor = HexagonProcessor(num_palette_colors, num_processes, hexagons_dir)
+    processor = HexagonProcessor(num_palette_colors, num_processes, hexagons_dir, chunk_size, save_hexagons)
     processor.generate_palette(combined_image)
 
     # Save palette with new naming convention
@@ -118,15 +118,21 @@ def process_video(input_video_path, num_palette_colors, num_processes):
                     with tqdm(total=total_hexagons, desc=f"Frame {frame_number}", unit="hexagon", leave=False) as hexagon_pbar:
                         processed_frame = processor.process_image(frame, hexagon_pbar)
                     
-                    # Save processed frame with palette hash in filename
-                    frame_filename = f"{processor.palette_hash[:6]}_frame_{frame_number:06d}.png"
-                    frame_path = os.path.join(frames_dir, frame_filename)
-                    plt.imsave(frame_path, processed_frame)
+                    if save_frames:
+                        # Save processed frame with palette hash in filename
+                        frame_filename = f"{processor.palette_hash[:6]}_frame_{frame_number:06d}.png"
+                        frame_path = os.path.join(frames_dir, frame_filename)
+                        plt.imsave(frame_path, processed_frame)
                     
                     downscaled_frame = cv2.resize(processed_frame, (reader.width * 4, reader.height * 4))
                     writer.write_frame(downscaled_frame)
                     
                     frame_pbar.update(1)
+                    
+                    # Print cache hit rate every 10 frames
+                    if frame_number % 10 == 0:
+                        cache_hit_rate = processor.get_cache_hit_rate()
+                        print(f"Current cache hit rate: {cache_hit_rate:.2%}")
                     
                 except Exception as e:
                     print(f"Error processing frame {frame_number}: {str(e)}")
@@ -143,17 +149,20 @@ def process_video(input_video_path, num_palette_colors, num_processes):
         if failed_frames:
             print(f"Failed frames: {failed_frames}")
         
-        # Report cache hit rate
-        cache_hit_rate = processor.get_cache_hit_rate()
-        print(f"Cache hit rate: {cache_hit_rate:.2%}")
+        # Report final cache hit rate
+        final_cache_hit_rate = processor.get_cache_hit_rate()
+        print(f"Final cache hit rate: {final_cache_hit_rate:.2%}")
+        print(f"Total cache hits: {processor.cache_hits.value}")
+        print(f"Total cache misses: {processor.cache_misses.value}")
+        print(f"Final cache size: {len(processor.hexagon_cache)}")
 
-def main(input_path, num_palette_colors=16, num_processes=None):
+def main(input_path, num_palette_colors=16, num_processes=None, chunk_size=32, save_hexagons=True, save_frames=True):
     start_time = time.time()
 
     if input_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
-        process_image(input_path, num_palette_colors, num_processes)
+        process_image(input_path, num_palette_colors, num_processes, chunk_size, save_hexagons)
     elif input_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        process_video(input_path, num_palette_colors, num_processes)
+        process_video(input_path, num_palette_colors, num_processes, chunk_size, save_hexagons, save_frames)
     else:
         print(f"Error: Unsupported file format for '{input_path}'")
         return
@@ -168,6 +177,12 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--colors", type=int, default=16, help="Number of colors in the palette (default: 16)")
     parser.add_argument("-p", "--processes", type=int, default=None, 
                         help="Number of processes to use (default: number of CPU cores)")
+    parser.add_argument("--chunk-size", type=int, default=32, 
+                        help="Number of hexagons to process in each chunk (default: 32)")
+    parser.add_argument("--save-hexagons", action="store_true", default=False,
+                        help="Save individual hexagon images (default: False)")
+    parser.add_argument("--save-frames", action="store_true", default=False,
+                        help="Save individual processed frames from video (default: False)")
     
     args = parser.parse_args()
     
@@ -175,4 +190,4 @@ if __name__ == "__main__":
         print("Minimum color palette size must be at least 5. Setting it to 5.")
         args.colors = 5
     
-    main(args.input_path, args.colors, args.processes)
+    main(args.input_path, args.colors, args.processes, args.chunk_size, args.save_hexagons, args.save_frames)
