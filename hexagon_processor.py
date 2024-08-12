@@ -189,9 +189,7 @@ class HexagonProcessor:
         pattern = np.zeros((2 * radius, 2 * radius, 3), dtype=np.uint8)
         if bw_rgb != 0:
             pattern = np.full((2 * radius, 2 * radius, 3), bw_rgb, dtype=np.uint8)
-        hexagon = RegularPolygon((radius, radius), numVertices=6, radius=radius, orientation=np.pi / 2)
-        coords = hexagon.get_verts().astype(int)
-
+        
         layer_areas = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 1: 0}
         layer_radii = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 1: 0}
         
@@ -228,7 +226,6 @@ class HexagonProcessor:
         inner_hexagon = RegularPolygon((radius, radius), numVertices=6, radius=hex_radius, orientation=np.pi / 2)
         inner_coords = inner_hexagon.get_verts().astype(int)
 
-        mask = self.create_hex_mask(center_x, center_y, hex_radius, pattern.shape[:2])
         scaled_center_x = center_x // 16
         scaled_center_y = center_y // 16
         scaled_radius = hex_radius // 16
