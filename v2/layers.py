@@ -465,7 +465,8 @@ class LayerRenderer:
 
         # Draw angular zones with vectorized angle calculations
         # Start angle offset centers the pattern (base angle - half of even_angle)
-        base_zone_angle = 360 / num_zones / 2  # Half of full zone angle
+        # Base zone angle is 360/num_zones (30 degrees for 12 zones)
+        base_zone_angle = 360 / num_zones  # Full zone angle
         initial_offset = base_zone_angle - (even_angle / 2)
 
         # Pre-compute all angles vectorized (alternating even_angle and odd_angle)
