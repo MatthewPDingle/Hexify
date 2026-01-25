@@ -9,23 +9,44 @@ all the components:
 
 The processor handles parallelization, caching, and image I/O, delegating
 the actual rendering work to the specialized components.
+
+The processor supports a settings-based configuration system through the
+HexifySettings class. For backward compatibility, all existing parameters
+continue to work unchanged - if no settings are provided, defaults are used.
+
+RGBA support:
+- Set output_format="RGBA" for transparent background outside hexagons
+- Hexagon interiors remain opaque, background becomes transparent
 """
 
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 
 from .color import ColorPalette
-from .config import DEFAULT_CHUNK_SIZE
+from .config import DEFAULT_CHUNK_SIZE, ConfigResolver
 from .exceptions import InvalidImageError
 from .geometry import HexagonGrid, HexagonMask, average_color
 from .layers import LayerRenderer
+from .settings import HexifySettings, QuantizationMethod
+from .styles import BorderStyle, FillStyle, apply_alpha_channel
+
+# Lazy import for matplotlib (heavy module)
+_plt = None
+
+
+def _get_plt():
+    """Lazy load matplotlib.pyplot."""
+    global _plt
+    if _plt is None:
+        import matplotlib.pyplot as plt
+        _plt = plt
+    return _plt
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -44,12 +65,25 @@ class HexagonProcessor:
        c. Composite onto output image
     4. Cache patterns by color for efficiency
 
+    The processor can be configured in two ways:
+    1. Traditional parameters (backward compatible):
+       processor = HexagonProcessor(num_palette_colors=16)
+
+    2. Settings-based configuration:
+       settings = HexifySettings(hex_width=128, num_layers=5)
+       processor = HexagonProcessor(settings=settings)
+
+    When settings are provided, they take precedence over individual parameters.
+
     Attributes:
+        settings: HexifySettings configuration (or None for defaults)
         num_palette_colors: Number of colors in the palette
         num_processes: Number of parallel workers
         hexagons_dir: Directory to save individual hexagon images
         chunk_size: Number of hexagons per processing chunk
         save_hexagons: Whether to save individual hexagon images
+        fast_mode: Whether to use MiniBatchKMeans for faster palette generation
+        output_format: Output image format - "RGB" (default) or "RGBA" for transparency
     """
 
     def __init__(
@@ -58,7 +92,11 @@ class HexagonProcessor:
         num_processes: Optional[int] = None,
         hexagons_dir: Optional[str] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
-        save_hexagons: bool = True
+        save_hexagons: bool = True,
+        fast_mode: bool = False,
+        settings: Optional[HexifySettings] = None,
+        output_format: Literal["RGB", "RGBA"] = "RGB",
+        style_params: Optional[dict] = None
     ):
         """
         Initialize the hexagon processor.
@@ -69,23 +107,59 @@ class HexagonProcessor:
             hexagons_dir: Directory to save hexagon images
             chunk_size: Hexagons per processing chunk
             save_hexagons: Whether to save individual hexagons
+            fast_mode: If True, use MiniBatchKMeans for faster palette generation
+            settings: Optional HexifySettings for full configuration control.
+                     When provided, overrides num_palette_colors, chunk_size,
+                     and fast_mode parameters.
+            output_format: Output format - "RGB" (default) or "RGBA" for transparency.
+                          When RGBA, pixels outside hexagons are fully transparent.
+            style_params: Optional dict of style parameters for LayerRenderer:
+                         - border_width: Width of hexagon border in pixels (0 = none)
+                         - border_color: Border color as (R, G, B) tuple
+                         - border_style: BorderStyle enum value
+                         - fill_style: FillStyle enum value
+                         - noise_intensity: Noise texture intensity (0.0-1.0)
         """
-        self.num_palette_colors = num_palette_colors
+        # Store settings for access by other components
+        self.settings = settings
+        self._config = ConfigResolver(settings)
+
+        # Determine effective values based on settings or parameters
+        if settings is not None:
+            self.num_palette_colors = settings.num_palette_colors
+            self.chunk_size = settings.chunk_size
+            self.fast_mode = settings.quantization_method == QuantizationMethod.MINIBATCH_KMEANS
+        else:
+            self.num_palette_colors = num_palette_colors
+            self.chunk_size = chunk_size
+            self.fast_mode = fast_mode
+
+        # These are always taken from parameters (not in settings)
         self.num_processes = num_processes or os.cpu_count()
         self.hexagons_dir = hexagons_dir
-        self.chunk_size = chunk_size
         self.save_hexagons = save_hexagons
 
-        # Initialize components
-        self.palette = ColorPalette(num_palette_colors)
-        self.grid = HexagonGrid()
+        # Output format and style parameters
+        self.output_format = output_format
+        self.style_params = style_params or {}
+
+        # Initialize components with settings
+        self.palette = ColorPalette(
+            self.num_palette_colors,
+            fast_mode=self.fast_mode,
+            settings=settings
+        )
+        self.grid = HexagonGrid(settings=settings)
 
         # Shared cache for parallel processing
+        # Use Manager for shared objects (required for ProcessPoolExecutor)
+        # Note: Manager().Value has some IPC overhead but is required for
+        # sharing between processes spawned by ProcessPoolExecutor
         manager = Manager()
         self.hexagon_cache = manager.dict()
+        self.cache_lock = manager.Lock()
         self.cache_hits = manager.Value('i', 0)
         self.cache_misses = manager.Value('i', 0)
-        self.cache_lock = manager.Lock()
 
         # Will be set during processing
         self.input_image = None
@@ -202,9 +276,20 @@ class HexagonProcessor:
             pbar: Optional progress bar
 
         Returns:
-            Complete output image
+            Complete output image (RGB or RGBA based on output_format)
         """
-        output_image = np.zeros(self.grid.output_shape, dtype=np.uint8)
+        # Create output image with appropriate number of channels
+        if self.output_format == "RGBA":
+            # RGBA: 4 channels, alpha starts at 0 (fully transparent)
+            output_shape = (*self.grid.output_shape[:2], 4)
+            output_image = np.zeros(output_shape, dtype=np.uint8)
+        else:
+            # RGB: 3 channels (default)
+            output_image = np.zeros(self.grid.output_shape, dtype=np.uint8)
+
+        # Track hexagon mask for RGBA alpha channel
+        if self.output_format == "RGBA":
+            combined_hex_mask = np.zeros(self.grid.output_shape[:2], dtype=np.uint8)
 
         # Divide into chunks for parallel processing
         hex_center_chunks = [
@@ -226,9 +311,14 @@ class HexagonProcessor:
                 for result in results:
                     if result:
                         x_start, y_start, x_end, y_end, hex_pattern_masked, mask_slice = result
-                        # Composite hexagon onto output
+                        # Composite hexagon onto output (RGB channels only)
                         hex_slice = output_image[y_start:y_end, x_start:x_end]
-                        hex_slice[mask_slice != 0] = hex_pattern_masked[mask_slice != 0]
+                        hex_slice[mask_slice != 0, :3] = hex_pattern_masked[mask_slice != 0]
+
+                        # For RGBA, also update alpha channel and track mask
+                        if self.output_format == "RGBA":
+                            hex_slice[mask_slice != 0, 3] = 255  # Fully opaque
+                            combined_hex_mask[y_start:y_end, x_start:x_end][mask_slice != 0] = 255
 
                 if pbar:
                     pbar.update(self.chunk_size)
@@ -257,8 +347,13 @@ class HexagonProcessor:
         local_cache = {}
         results = []
 
-        # Create layer renderer for this chunk
-        renderer = LayerRenderer(self.palette, self.input_image)
+        # Create layer renderer for this chunk with style parameters
+        renderer = LayerRenderer(
+            self.palette,
+            self.input_image,
+            settings=self.settings,
+            **self.style_params
+        )
 
         for center_x, center_y in centers:
             # Get clipped bounds
@@ -302,7 +397,7 @@ class HexagonProcessor:
                     if self.save_hexagons and self.hexagons_dir:
                         hex_filename = f"{self.palette.palette_hash[:6]}_hexagon_{avg_rgb_key[0]:03d}_{avg_rgb_key[1]:03d}_{avg_rgb_key[2]:03d}.png"
                         hex_path = os.path.join(self.hexagons_dir, hex_filename)
-                        plt.imsave(hex_path, hex_pattern)
+                        _get_plt().imsave(hex_path, hex_pattern)
 
                 # Create mask for compositing
                 full_mask = HexagonMask.create(

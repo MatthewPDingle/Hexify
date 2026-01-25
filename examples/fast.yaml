@@ -1,0 +1,30 @@
+# Hexify Fast Preset
+# Optimized for speed with reduced quality
+# Good for previews and batch processing large collections
+
+# Geometry settings
+hex_width: 256
+hex_scale_factor: 16
+num_layers: 5          # Reduced from 7 for faster rendering
+num_zones: 6           # Reduced from 12 for simpler patterns
+orientation: flat_top
+
+# Color settings - using minibatch_kmeans for speed
+color_space: rgb
+quantization_method: minibatch_kmeans
+num_palette_colors: 8  # Fewer colors = faster palette generation
+
+# K-means settings
+kmeans_random_state: 42
+kmeans_n_init: 5       # Fewer initializations for speed
+max_palette_sample_pixels: 500000
+
+# Style settings
+border_width: 0
+border_color: [0, 0, 0]
+
+# Processing settings
+chunk_size: 200        # Larger chunks = less overhead
+
+# Brightness settings
+brightness_threshold: 128

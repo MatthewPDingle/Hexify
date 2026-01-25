@@ -6,10 +6,16 @@ This module handles all geometric calculations:
 - Creating hexagonal masks for sampling and rendering
 - Point-in-polygon tests and clipping operations
 - Coordinate transformations between input and output spaces
+
+The module supports settings-based configuration through HexifySettings.
+For backward compatibility, module-level constants are used when no
+settings are provided.
 """
 
+from __future__ import annotations
+
 import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -17,6 +23,7 @@ from matplotlib.patches import RegularPolygon
 from matplotlib.path import Path
 
 from .config import (
+    ConfigResolver,
     HEX_HEIGHT,
     HEX_HORIZONTAL_SPACING,
     HEX_NUM_VERTICES,
@@ -26,6 +33,9 @@ from .config import (
     HEX_VERTICAL_SPACING,
     HEX_WIDTH,
 )
+
+if TYPE_CHECKING:
+    from .settings import HexifySettings
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -42,15 +52,26 @@ class HexagonGrid:
 
     The output image is HEX_SCALE_FACTOR times larger than the input,
     allowing detailed hexagon patterns to be rendered.
+
+    Supports settings-based configuration through HexifySettings.
+    For backward compatibility, module-level constants are used when
+    no settings are provided.
     """
 
-    def __init__(self):
-        """Initialize the hexagon grid."""
+    def __init__(self, settings: Optional[HexifySettings] = None):
+        """
+        Initialize the hexagon grid.
+
+        Args:
+            settings: Optional HexifySettings for configuration.
+                     If None, uses module-level constants.
+        """
+        self._config = ConfigResolver(settings)
         self.hex_centers = None
         self.output_shape = None
-        self.hex_width = HEX_WIDTH
-        self.hex_height = HEX_HEIGHT
-        self.hex_radius = HEX_RADIUS
+        self.hex_width = self._config.hex_width
+        self.hex_height = self._config.hex_height
+        self.hex_radius = self._config.hex_radius
 
     def setup(self, input_shape: tuple) -> None:
         """
@@ -62,25 +83,30 @@ class HexagonGrid:
         Args:
             input_shape: Shape of input image (height, width, channels)
         """
-        # Output is scaled up by HEX_SCALE_FACTOR
+        # Get configuration values
+        scale_factor = self._config.hex_scale_factor
+        h_spacing = self._config.hex_horizontal_spacing
+        v_spacing = self._config.hex_vertical_spacing
+
+        # Output is scaled up by scale_factor
         self.output_shape = (
-            input_shape[0] * HEX_SCALE_FACTOR,
-            input_shape[1] * HEX_SCALE_FACTOR,
+            input_shape[0] * scale_factor,
+            input_shape[1] * scale_factor,
             3
         )
 
         # Calculate grid dimensions with +2 for edge coverage
-        cols = int(self.output_shape[1] / HEX_HORIZONTAL_SPACING) + 2
+        cols = int(self.output_shape[1] / h_spacing) + 2
         # BUG FIX: Was using HEX_HORIZONTAL_SPACING instead of HEX_VERTICAL_SPACING
         # This caused too few rows for tall images
-        rows = int(self.output_shape[0] / HEX_VERTICAL_SPACING) + 2
+        rows = int(self.output_shape[0] / v_spacing) + 2
 
         # Generate hexagon centers using offset coordinate system
         # Odd columns are shifted down by half the vertical spacing
         self.hex_centers = [
             (
-                int(HEX_HORIZONTAL_SPACING * col),
-                int(HEX_VERTICAL_SPACING * row + (0.5 * HEX_VERTICAL_SPACING if col % 2 else 0))
+                int(h_spacing * col),
+                int(v_spacing * row + (0.5 * v_spacing if col % 2 else 0))
             )
             for row in range(rows)
             for col in range(cols)
@@ -114,14 +140,15 @@ class HexagonGrid:
         Returns:
             Tuple of (input_x, input_y) coordinates
         """
+        scale_factor = self._config.hex_scale_factor
         return (
-            int(center_x / HEX_SCALE_FACTOR),
-            int(center_y / HEX_SCALE_FACTOR)
+            int(center_x / scale_factor),
+            int(center_y / scale_factor)
         )
 
     def get_input_hex_radius(self) -> int:
         """Get the hexagon radius in input image coordinates."""
-        return self.hex_radius // HEX_SCALE_FACTOR
+        return self.hex_radius // self._config.hex_scale_factor
 
 
 class HexagonMask:
@@ -131,33 +158,46 @@ class HexagonMask:
     Masks are used to:
     - Sample average colors from hexagonal regions of the input image
     - Composite rendered hexagons onto the output image
+
+    All methods support an optional orientation parameter for settings-based
+    configuration. When not provided, uses the default flat-top orientation.
     """
 
     @staticmethod
-    def create(center_x: int, center_y: int, radius: int, shape: tuple) -> np.ndarray:
+    def create(
+        center_x: int,
+        center_y: int,
+        radius: int,
+        shape: tuple,
+        orientation: Optional[float] = None
+    ) -> np.ndarray:
         """
         Create a hexagonal mask at the specified location.
 
         Uses matplotlib's RegularPolygon to generate accurate hexagon vertices,
-        then fills with OpenCV. The hexagon is oriented with a flat top.
+        then fills with OpenCV. The hexagon is oriented with a flat top by default.
 
         Args:
             center_x: X coordinate of hexagon center
             center_y: Y coordinate of hexagon center
             radius: Radius of the hexagon (center to vertex)
             shape: Shape of the mask array (height, width)
+            orientation: Hexagon orientation in radians (default: flat-top)
 
         Returns:
             Binary mask as numpy array with 255 inside hexagon, 0 outside
         """
+        if orientation is None:
+            orientation = HEX_ORIENTATION
+
         mask = np.zeros(shape, dtype=np.uint8)
 
-        # Create hexagon with flat-top orientation (pi/2 rotation)
+        # Create hexagon with specified orientation
         hexagon = RegularPolygon(
             (center_x, center_y),
             numVertices=HEX_NUM_VERTICES,
             radius=radius,
-            orientation=HEX_ORIENTATION
+            orientation=orientation
         )
 
         # Get vertices and clip to image bounds
@@ -169,7 +209,12 @@ class HexagonMask:
         return mask
 
     @staticmethod
-    def get_hexagon_vertices(center_x: int, center_y: int, radius: int) -> np.ndarray:
+    def get_hexagon_vertices(
+        center_x: int,
+        center_y: int,
+        radius: int,
+        orientation: Optional[float] = None
+    ) -> np.ndarray:
         """
         Get the vertices of a hexagon.
 
@@ -177,15 +222,19 @@ class HexagonMask:
             center_x: X coordinate of hexagon center
             center_y: Y coordinate of hexagon center
             radius: Radius of the hexagon
+            orientation: Hexagon orientation in radians (default: flat-top)
 
         Returns:
             Numpy array of vertex coordinates, shape (6, 2)
         """
+        if orientation is None:
+            orientation = HEX_ORIENTATION
+
         hexagon = RegularPolygon(
             (center_x, center_y),
             numVertices=HEX_NUM_VERTICES,
             radius=radius,
-            orientation=HEX_ORIENTATION
+            orientation=orientation
         )
         return hexagon.get_verts().astype(int)
 

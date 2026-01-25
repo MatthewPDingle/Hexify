@@ -9,22 +9,53 @@ This module handles all color-related operations:
 The color selection algorithm aims to approximate any target color using only
 colors from a limited palette by strategically mixing two palette colors in
 varying proportions across angular zones.
+
+The module supports settings-based configuration through HexifySettings.
+For backward compatibility, module-level constants are used when no
+settings are provided.
 """
+
+from __future__ import annotations
 
 import hashlib
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
-from sklearn.cluster import KMeans
 
 from .config import (
     BRIGHTNESS_THRESHOLD,
+    ConfigResolver,
     KMEANS_N_INIT,
     KMEANS_RANDOM_STATE,
     MAX_PALETTE_SAMPLE_PIXELS,
 )
+
+if TYPE_CHECKING:
+    from .settings import HexifySettings
+
+# Lazy imports for heavy sklearn modules
+_KMeans = None
+_MiniBatchKMeans = None
+
+
+def _get_kmeans():
+    """Lazy load KMeans from sklearn."""
+    global _KMeans
+    if _KMeans is None:
+        from sklearn.cluster import KMeans
+        _KMeans = KMeans
+    return _KMeans
+
+
+def _get_minibatch_kmeans():
+    """Lazy load MiniBatchKMeans from sklearn."""
+    global _MiniBatchKMeans
+    if _MiniBatchKMeans is None:
+        from sklearn.cluster import MiniBatchKMeans
+        _MiniBatchKMeans = MiniBatchKMeans
+    return _MiniBatchKMeans
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -37,16 +68,35 @@ class ColorPalette:
     The palette is generated using K-means clustering on the input image pixels,
     which finds the most representative colors. The palette is then sorted by
     brightness for consistency across runs.
+
+    Supports settings-based configuration through HexifySettings.
+    For backward compatibility, parameters take precedence over settings.
+
+    Attributes:
+        num_colors: Number of colors to extract from the image
+        fast_mode: If True, uses MiniBatchKMeans for faster (but potentially
+                   less accurate) palette generation. Default is False.
     """
 
-    def __init__(self, num_colors: int):
+    def __init__(
+        self,
+        num_colors: int,
+        fast_mode: bool = False,
+        settings: Optional[HexifySettings] = None
+    ):
         """
         Initialize the color palette.
 
         Args:
             num_colors: Number of colors to extract from the image
+            fast_mode: If True, use MiniBatchKMeans for faster palette generation.
+                       Default is False (use standard KMeans for better quality).
+            settings: Optional HexifySettings for configuration.
+                     When provided, uses settings for kmeans parameters.
         """
+        self._config = ConfigResolver(settings)
         self.num_colors = num_colors
+        self.fast_mode = fast_mode
         self.colors = None
         self.palette_hash = None
 
@@ -60,14 +110,23 @@ class ColorPalette:
         3. Sorts colors by brightness for reproducible ordering
         4. Rounds to integers and generates a hash for caching
 
+        When fast_mode is enabled, uses MiniBatchKMeans which processes data
+        in mini-batches for significantly faster training at the cost of
+        slightly reduced clustering quality.
+
         Args:
             image: Input image as numpy array (H, W, 3) in RGB format
         """
+        # Get configuration values
+        max_sample_pixels = self._config.max_palette_sample_pixels
+        random_state = self._config.kmeans_random_state
+        n_init = self._config.kmeans_n_init
+
         # Downscale large images to speed up K-means clustering.
         # Using INTER_AREA for high quality downsampling that preserves color accuracy.
         height, width = image.shape[:2]
-        if height * width > MAX_PALETTE_SAMPLE_PIXELS:
-            scale = np.sqrt(MAX_PALETTE_SAMPLE_PIXELS / (height * width))
+        if height * width > max_sample_pixels:
+            scale = np.sqrt(max_sample_pixels / (height * width))
             new_height = int(height * scale)
             new_width = int(width * scale)
             image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
@@ -76,11 +135,24 @@ class ColorPalette:
         pixels = image.reshape(-1, 3)
 
         # Use fixed random state for reproducible palette generation
-        kmeans = KMeans(
-            n_clusters=self.num_colors,
-            random_state=KMEANS_RANDOM_STATE,
-            n_init=KMEANS_N_INIT
-        )
+        if self.fast_mode:
+            # MiniBatchKMeans is faster but may produce slightly different results
+            MiniBatchKMeans = _get_minibatch_kmeans()
+            kmeans = MiniBatchKMeans(
+                n_clusters=self.num_colors,
+                random_state=random_state,
+                n_init=n_init,
+                batch_size=1024,  # Process 1024 samples at a time
+                max_iter=100,
+            )
+        else:
+            # Standard KMeans for best quality
+            KMeans = _get_kmeans()
+            kmeans = KMeans(
+                n_clusters=self.num_colors,
+                random_state=random_state,
+                n_init=n_init
+            )
         kmeans.fit(pixels)
 
         palette = kmeans.cluster_centers_
@@ -212,7 +284,10 @@ class ColorPalette:
         return best_secondary
 
 
-def get_background_color(avg_rgb: np.ndarray) -> Tuple[int, int, int]:
+def get_background_color(
+    avg_rgb: np.ndarray,
+    threshold: Optional[int] = None
+) -> Tuple[int, int, int]:
     """
     Determine background color (black or white) based on average brightness.
 
@@ -221,25 +296,36 @@ def get_background_color(avg_rgb: np.ndarray) -> Tuple[int, int, int]:
 
     Args:
         avg_rgb: Average color of the region
+        threshold: Brightness threshold (default: BRIGHTNESS_THRESHOLD)
 
     Returns:
         Background color as tuple (R, G, B) - either (0, 0, 0) or (255, 255, 255)
     """
+    if threshold is None:
+        threshold = BRIGHTNESS_THRESHOLD
+
     brightness = np.mean(avg_rgb)
-    if brightness < BRIGHTNESS_THRESHOLD:
+    if brightness < threshold:
         return (255, 255, 255)  # Dark colors get white background
     else:
         return (0, 0, 0)  # Light colors get black background
 
 
-def get_background_value(avg_rgb: np.ndarray) -> int:
+def get_background_value(
+    avg_rgb: np.ndarray,
+    threshold: Optional[int] = None
+) -> int:
     """
     Get background value as single integer (0 or 255).
 
     Args:
         avg_rgb: Average color of the region
+        threshold: Brightness threshold (default: BRIGHTNESS_THRESHOLD)
 
     Returns:
         0 for black background, 255 for white background
     """
-    return 0 if np.mean(avg_rgb) >= BRIGHTNESS_THRESHOLD else 255
+    if threshold is None:
+        threshold = BRIGHTNESS_THRESHOLD
+
+    return 0 if np.mean(avg_rgb) >= threshold else 255

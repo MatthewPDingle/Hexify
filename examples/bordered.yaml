@@ -1,0 +1,30 @@
+# Hexify Bordered Preset
+# Adds visible borders between hexagons
+# Creates a stained-glass or mosaic effect
+
+# Geometry settings
+hex_width: 256
+hex_scale_factor: 16
+num_layers: 7
+num_zones: 12
+orientation: flat_top
+
+# Color settings
+color_space: rgb
+quantization_method: kmeans
+num_palette_colors: 16
+
+# K-means settings
+kmeans_random_state: 42
+kmeans_n_init: 10
+max_palette_sample_pixels: 1000000
+
+# Style settings - the key difference
+border_width: 2         # Visible border between hexagons
+border_color: [0, 0, 0] # Black borders (stained glass effect)
+
+# Processing settings
+chunk_size: 100
+
+# Brightness settings
+brightness_threshold: 128

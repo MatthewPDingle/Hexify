@@ -16,11 +16,22 @@ The layer system creates a distinctive visual style where:
 The color mixing in even layers works by dividing the layer into 12 angular zones,
 alternating between two colors. The ratio of zone sizes determines the visual
 color blend, approximating any target color using only palette colors.
+
+Style augmentation features (all optional, backward compatible):
+- Border styles: solid, double, glow effects around hexagon edges
+- Fill styles: solid, radial gradient, linear gradient
+- Noise texture: subtle grain for artistic effects
+
+The module supports settings-based configuration through HexifySettings.
+For backward compatibility, module-level constants are used when no
+settings are provided.
 """
+
+from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -29,6 +40,7 @@ from matplotlib.patches import RegularPolygon
 from .color import ColorPalette, get_background_color
 from .config import (
     BRIGHTNESS_THRESHOLD,
+    ConfigResolver,
     FLOAT_EPSILON,
     HEX_NUM_VERTICES,
     HEX_ORIENTATION,
@@ -40,6 +52,17 @@ from .config import (
     NUM_ZONES,
 )
 from .geometry import HexagonMask, average_color, clip_point_to_hexagon
+from .styles import (
+    BorderStyle,
+    FillStyle,
+    add_hexagon_border,
+    add_noise_texture,
+    apply_radial_gradient,
+    apply_linear_gradient,
+)
+
+if TYPE_CHECKING:
+    from .settings import HexifySettings
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -52,18 +75,60 @@ class LayerRenderer:
     Each hexagon is rendered as a series of concentric layers from outside in.
     This class handles the complex geometry of the angular zones in even layers
     and coordinates color selection for visual color mixing.
+
+    Style augmentation features (all optional, backward compatible):
+    - border_width, border_color, border_style: Add borders around hexagons
+    - fill_style: Control how hexagons are filled (solid, gradient)
+    - noise_intensity: Add subtle noise texture for artistic effect
     """
 
-    def __init__(self, palette: ColorPalette, input_image: np.ndarray):
+    def __init__(
+        self,
+        palette: ColorPalette,
+        input_image: np.ndarray,
+        settings: Optional[HexifySettings] = None,
+        border_width: int = 0,
+        border_color: Tuple[int, int, int] = (0, 0, 0),
+        border_style: BorderStyle = BorderStyle.NONE,
+        fill_style: FillStyle = FillStyle.SOLID,
+        noise_intensity: float = 0.0,
+        gradient_inner_color: Optional[Tuple[int, int, int]] = None,
+        gradient_outer_color: Optional[Tuple[int, int, int]] = None,
+    ):
         """
         Initialize the layer renderer.
 
         Args:
             palette: The color palette to use for rendering
             input_image: The input image for sampling colors
+            settings: Optional HexifySettings for full configuration control
+            border_width: Width of hexagon border in pixels (0 = no border)
+            border_color: Border color as (R, G, B) tuple
+            border_style: Style of border (NONE, SOLID, DOUBLE, GLOW)
+            fill_style: Fill style (SOLID, RADIAL_GRADIENT, LINEAR_GRADIENT)
+            noise_intensity: Noise texture intensity (0.0 = none, 0.05-0.15 typical)
+            gradient_inner_color: Inner color for gradient fills (optional)
+            gradient_outer_color: Outer color for gradient fills (optional)
         """
         self.palette = palette
         self.input_image = input_image
+        self.settings = settings
+        self._config = ConfigResolver(settings)
+
+        # Style augmentation parameters (all optional, defaults preserve existing behavior)
+        # Settings can override border settings if provided
+        if settings is not None:
+            self.border_width = settings.border_width
+            self.border_color = settings.border_color
+        else:
+            self.border_width = border_width
+            self.border_color = border_color
+
+        self.border_style = border_style if self.border_width > 0 else BorderStyle.NONE
+        self.fill_style = fill_style
+        self.noise_intensity = noise_intensity
+        self.gradient_inner_color = gradient_inner_color
+        self.gradient_outer_color = gradient_outer_color
 
     def create_hex_pattern(
         self,
@@ -75,7 +140,7 @@ class LayerRenderer:
         """
         Create the full multi-layer hexagon pattern.
 
-        Renders all 7 layers from outside (layer 7) to center (layer 1).
+        Renders all layers from outside to center.
         Odd layers are solid background, even layers have color-mixing zones.
 
         Args:
@@ -87,9 +152,13 @@ class LayerRenderer:
         Returns:
             Pattern as numpy array (2*radius, 2*radius, 3)
         """
+        # Get configuration values
+        num_layers = self._config.num_layers
+        brightness_threshold = self._config.brightness_threshold
+
         # Determine background color based on brightness
         # Dark areas get white background, light areas get black
-        bw_value = 0 if np.mean(avg_rgb) >= BRIGHTNESS_THRESHOLD else 255
+        bw_value = 0 if np.mean(avg_rgb) >= brightness_threshold else 255
         bw_color = (bw_value, bw_value, bw_value)
 
         # Initialize pattern with background color
@@ -97,17 +166,17 @@ class LayerRenderer:
 
         # Track layer areas and radii for color mixing calculations
         # Even layers need to know the area of the odd layer inside them
-        layer_areas = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
-        layer_radii = {7: 0, 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
+        layer_areas = {i: 0 for i in range(num_layers, 0, -1)}
+        layer_radii = {i: 0 for i in range(num_layers, 0, -1)}
 
         # Track colors to avoid reusing in adjacent layers
         avoid_rgb = []
 
-        # Render layers from outside in (7 down to 1)
-        for i in range(NUM_LAYERS, 0, -1):
+        # Render layers from outside in
+        for i in range(num_layers, 0, -1):
             if i % 2 == 1:
                 # Odd layers: solid background color
-                hex_radius = int(radius * (i / NUM_LAYERS))
+                hex_radius = int(radius * (i / num_layers))
                 layer_radii[i] = hex_radius
                 pattern, layer_area = self._fill_odd_layer(pattern, radius, hex_radius, bw_color)
                 layer_areas[i] = layer_area
@@ -126,6 +195,97 @@ class LayerRenderer:
                     bw_color=bw_color
                 )
                 layer_areas[i] = layer_area
+
+        # Apply style augmentations (only if enabled)
+        pattern = self._apply_style_augmentations(pattern, radius)
+
+        return pattern
+
+    def _apply_style_augmentations(
+        self,
+        pattern: np.ndarray,
+        radius: int
+    ) -> np.ndarray:
+        """
+        Apply optional style augmentations to the pattern.
+
+        This method applies any enabled style effects in the correct order:
+        1. Gradient fill (if enabled)
+        2. Noise texture (if enabled)
+        3. Border (if enabled)
+
+        Args:
+            pattern: The base pattern to augment
+            radius: Hexagon radius
+
+        Returns:
+            Pattern with style augmentations applied
+        """
+        # Get configuration values
+        hex_orientation = self._config.hex_orientation
+        hex_num_vertices = self._config.hex_num_vertices
+
+        # Get hexagon coordinates for border and mask operations
+        hexagon = RegularPolygon(
+            (radius, radius),
+            numVertices=hex_num_vertices,
+            radius=radius,
+            orientation=hex_orientation
+        )
+        hex_coords = hexagon.get_verts().astype(np.int32)
+
+        # Create mask for selective effects
+        mask = np.zeros((2 * radius, 2 * radius), dtype=np.uint8)
+        cv2.fillPoly(mask, [hex_coords], 255)
+
+        # Apply gradient fill if enabled
+        if self.fill_style != FillStyle.SOLID:
+            # Determine gradient colors (use average pattern colors if not specified)
+            inner_color = self.gradient_inner_color
+            outer_color = self.gradient_outer_color
+
+            if inner_color is None or outer_color is None:
+                # Default to subtle gradient based on pattern colors
+                center_color = pattern[radius, radius].tolist()
+                edge_color = pattern[0, radius].tolist() if radius > 0 else center_color
+
+                if inner_color is None:
+                    inner_color = tuple(center_color)
+                if outer_color is None:
+                    outer_color = tuple(edge_color)
+
+            if self.fill_style == FillStyle.RADIAL_GRADIENT:
+                pattern = apply_radial_gradient(
+                    pattern,
+                    center=(radius, radius),
+                    radius=radius,
+                    inner_color=inner_color,
+                    outer_color=outer_color,
+                    mask=mask
+                )
+            elif self.fill_style == FillStyle.LINEAR_GRADIENT:
+                pattern = apply_linear_gradient(
+                    pattern,
+                    start_point=(0, 0),
+                    end_point=(2 * radius, 2 * radius),
+                    start_color=inner_color,
+                    end_color=outer_color,
+                    mask=mask
+                )
+
+        # Apply noise texture if enabled
+        if self.noise_intensity > 0:
+            pattern = add_noise_texture(pattern, self.noise_intensity, mask)
+
+        # Apply border if enabled
+        if self.border_width > 0 and self.border_style != BorderStyle.NONE:
+            pattern = add_hexagon_border(
+                pattern,
+                hex_coords,
+                border_width=self.border_width,
+                border_color=self.border_color,
+                border_style=self.border_style
+            )
 
         return pattern
 
@@ -151,12 +311,16 @@ class LayerRenderer:
         Returns:
             Tuple of (updated pattern, layer area in pixels)
         """
+        # Get configuration values
+        hex_num_vertices = self._config.hex_num_vertices
+        hex_orientation = self._config.hex_orientation
+
         # Create hexagon centered in the pattern
         inner_hexagon = RegularPolygon(
             (radius, radius),
-            numVertices=HEX_NUM_VERTICES,
+            numVertices=hex_num_vertices,
             radius=hex_radius,
-            orientation=HEX_ORIENTATION
+            orientation=hex_orientation
         )
         inner_coords = inner_hexagon.get_verts().astype(int)
 
@@ -185,15 +349,15 @@ class LayerRenderer:
         Fill an even layer with color-mixing angular zones.
 
         Even layers are the core of the color approximation algorithm. They divide
-        the layer into 12 angular zones alternating between two palette colors.
+        the layer into angular zones alternating between two palette colors.
         The relative sizes of the zones determine the visual color blend.
 
         The zone sizing is based on how close the primary color is to the target:
-        - Perfect match: primary color gets 30-degree zones, secondary gets minimal
-        - Poor match: zones sizes approach equality (30 degrees each)
+        - Perfect match: primary color gets larger zones, secondary gets minimal
+        - Poor match: zones sizes approach equality
 
         Args:
-            layer_index: Which layer (6, 4, or 2)
+            layer_index: Which layer (e.g., 6, 4, or 2 with default settings)
             avg_rgb: Target color to approximate
             radius: Full hexagon radius
             layer_radii: Dict of radii for each layer
@@ -207,36 +371,51 @@ class LayerRenderer:
         Returns:
             Tuple of (updated pattern, layer area in pixels)
         """
+        # Get configuration values
+        num_layers = self._config.num_layers
+        hex_num_vertices = self._config.hex_num_vertices
+        hex_orientation = self._config.hex_orientation
+        hex_scale_factor = self._config.hex_scale_factor
+        layer_6_max_diameter = self._config.layer_6_max_diameter
+        layer_6_min_diameter = self._config.layer_6_min_diameter
+        inner_layer_diameter_range = self._config.inner_layer_diameter_range
+        num_zones = self._config.num_zones
+        float_epsilon = self._config.float_epsilon
+
         # Calculate layer diameter based on brightness.
         # Colors closer to mid-gray (128) get larger zones for more accurate mixing.
         # Extreme brightness values (0 or 255) get smaller zones.
         brightness = np.mean(avg_rgb)
 
-        if layer_index == 6:
-            # Outer even layer: varies from 192 to 256 based on brightness
-            diameter = LAYER_6_MAX_DIAMETER - abs(brightness - 128) * (LAYER_6_MAX_DIAMETER - LAYER_6_MIN_DIAMETER) / 128
+        # Determine which layer is the "outer even layer" based on num_layers
+        outer_even_layer = num_layers - 1 if num_layers % 2 == 0 else num_layers - 1
+
+        if layer_index == outer_even_layer or (num_layers == 7 and layer_index == 6):
+            # Outer even layer: varies based on brightness
+            diameter = layer_6_max_diameter - abs(brightness - 128) * (layer_6_max_diameter - layer_6_min_diameter) / 128
         else:
             # Inner even layers: based on outer odd layer radius with brightness adjustment
-            diameter = (layer_radii[layer_index + 1] * 2) - abs(brightness - 128) * INNER_LAYER_DIAMETER_RANGE / 128
+            diameter = (layer_radii[layer_index + 1] * 2) - abs(brightness - 128) * inner_layer_diameter_range / 128
 
         hex_radius = int(diameter // 2)
 
         # Create the hexagon for this layer
         inner_hexagon = RegularPolygon(
             (radius, radius),
-            numVertices=HEX_NUM_VERTICES,
+            numVertices=hex_num_vertices,
             radius=hex_radius,
-            orientation=HEX_ORIENTATION
+            orientation=hex_orientation
         )
         inner_coords = inner_hexagon.get_verts().astype(int)
 
         # Sample average color at this layer's scale from input image
-        scaled_center_x = center_x // HEX_SCALE_FACTOR
-        scaled_center_y = center_y // HEX_SCALE_FACTOR
-        scaled_radius = hex_radius // HEX_SCALE_FACTOR
+        scaled_center_x = center_x // hex_scale_factor
+        scaled_center_y = center_y // hex_scale_factor
+        scaled_radius = hex_radius // hex_scale_factor
 
         input_mask = HexagonMask.create(
-            scaled_center_x, scaled_center_y, scaled_radius, self.input_image.shape[:2]
+            scaled_center_x, scaled_center_y, scaled_radius, self.input_image.shape[:2],
+            orientation=hex_orientation
         )
         layer_avg_rgb = average_color(self.input_image, input_mask)
 
@@ -284,51 +463,64 @@ class LayerRenderer:
         color_1_rgb = tuple(map(int, color_1))
         color_2_rgb = tuple(map(int, color_2))
 
-        # Draw the 12 angular zones
-        # Start angle offset centers the pattern (30 degrees base - half of even_angle)
-        angle_offset = 30 - (even_angle / 2)
+        # Draw angular zones with vectorized angle calculations
+        # Start angle offset centers the pattern (base angle - half of even_angle)
+        base_zone_angle = 360 / num_zones / 2  # Half of full zone angle
+        initial_offset = base_zone_angle - (even_angle / 2)
 
-        for zone in range(NUM_ZONES):
-            # Alternate between even (primary) and odd (secondary) zones
-            angle = even_angle if zone % 2 == 0 else odd_angle
+        # Pre-compute all angles vectorized (alternating even_angle and odd_angle)
+        zone_indices = np.arange(num_zones)
+        zone_angles = np.where(zone_indices % 2 == 0, even_angle, odd_angle)
+
+        # Cumulative sum gives end angles, shifted gives start angles
+        cumulative_angles = np.cumsum(zone_angles)
+        end_angles = initial_offset + cumulative_angles
+        start_angles = np.concatenate([[initial_offset], end_angles[:-1]])
+
+        # Convert to radians for vectorized trigonometry
+        start_rads = np.radians(start_angles)
+        end_rads = np.radians(end_angles)
+
+        # Pre-compute all boundary points vectorized
+        p1_x = radius + hex_radius * np.cos(start_rads)
+        p1_y = radius + hex_radius * np.sin(start_rads)
+        p2_x = radius + hex_radius * np.cos(end_rads)
+        p2_y = radius + hex_radius * np.sin(end_rads)
+
+        # Pre-compute midpoints vectorized
+        p12_x = (p1_x + p2_x) / 2
+        p12_y = (p1_y + p2_y) / 2
+
+        # Pre-compute distances and triangle apex points vectorized
+        d = np.sqrt((p2_x - p1_x) ** 2 + (p2_y - p1_y) ** 2) / 2
+        length_of_shorter_leg = d / np.sqrt(3)
+
+        # Direction perpendicular to p1-p2
+        dx = p12_x - p1_x
+        dy = p12_y - p1_y
+        lengths = np.sqrt(dx ** 2 + dy ** 2)
+
+        # Avoid division by zero
+        safe_lengths = np.where(lengths > float_epsilon, lengths, 1.0)
+        dx_norm = dx / safe_lengths
+        dy_norm = dy / safe_lengths
+
+        # Calculate p3 (apex points) - use p1 for degenerate cases
+        p3_x = np.where(lengths > float_epsilon,
+                        p12_x + length_of_shorter_leg * dy_norm,
+                        p1_x)
+        p3_y = np.where(lengths > float_epsilon,
+                        p12_y - length_of_shorter_leg * dx_norm,
+                        p1_y)
+
+        # Now iterate through zones (still need loop for fillPoly calls)
+        for zone in range(num_zones):
             angle_color = color_1_rgb if zone % 2 == 0 else color_2_rgb
 
-            start_angle = angle_offset
-            end_angle = start_angle + angle
-            angle_offset += angle
-
-            # Calculate zone boundary points on the hexagon edge
-            p1 = (
-                radius + hex_radius * math.cos(math.radians(start_angle)),
-                radius + hex_radius * math.sin(math.radians(start_angle))
-            )
-            p2 = (
-                radius + hex_radius * math.cos(math.radians(end_angle)),
-                radius + hex_radius * math.sin(math.radians(end_angle))
-            )
-
-            # Calculate midpoint and triangular apex for odd zones
-            p12 = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-
-            # Distance from p1 to midpoint
-            d = ((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2) ** 0.5 / 2
-
-            # Height of equilateral triangle with base 2*d
-            length_of_shorter_leg = d / math.sqrt(3)
-
-            # Direction perpendicular to p1-p2
-            dx = p12[0] - p1[0]
-            dy = p12[1] - p1[1]
-
-            length = (dx ** 2 + dy ** 2) ** 0.5
-            if length > FLOAT_EPSILON:
-                dx /= length
-                dy /= length
-                # p3 is the apex of the triangle, perpendicular to the edge
-                p3 = (p12[0] + length_of_shorter_leg * dy, p12[1] - length_of_shorter_leg * dx)
-            else:
-                # Degenerate case: p1 and p2 are the same point
-                p3 = p1
+            # Get pre-computed points
+            p1 = (p1_x[zone], p1_y[zone])
+            p2 = (p2_x[zone], p2_y[zone])
+            p3 = (p3_x[zone], p3_y[zone])
 
             # Clip all points to stay within the hexagon
             p1 = clip_point_to_hexagon(p1, inner_coords)

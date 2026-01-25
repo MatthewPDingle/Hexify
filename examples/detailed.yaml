@@ -1,0 +1,35 @@
+# Hexify Detailed Preset
+# Maximum quality settings for detailed output
+# Best for final renders and high-resolution artwork
+
+# Geometry settings
+hex_width: 256
+hex_scale_factor: 16
+num_layers: 7          # Maximum layers for detailed patterns
+num_zones: 18          # More zones for smoother color transitions
+orientation: flat_top
+
+# Color settings - using standard k-means for best quality
+color_space: rgb
+quantization_method: kmeans
+num_palette_colors: 32  # More colors for better color matching
+
+# K-means settings - more iterations for stable colors
+kmeans_random_state: 42
+kmeans_n_init: 15       # More initializations for better clustering
+max_palette_sample_pixels: 1500000  # Sample more pixels
+
+# Style settings
+border_width: 0
+border_color: [0, 0, 0]
+
+# Processing settings
+chunk_size: 50          # Smaller chunks for better memory management
+
+# Brightness settings
+brightness_threshold: 128
+
+# Layer diameter settings
+layer_6_max_diameter: 256
+layer_6_min_diameter: 192
+inner_layer_diameter_range: 64
