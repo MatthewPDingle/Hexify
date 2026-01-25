@@ -1,1 +1,26 @@
-Hexify/Ilya/ 
+Hexify/Ilya/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# pytest
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
