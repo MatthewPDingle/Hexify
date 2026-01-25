@@ -436,14 +436,18 @@ class LayerRenderer:
         # Calculate zone angles based on color distance ratios.
         # percentage_off measures how "off" the primary color is from the target.
         # Higher values mean more equal zone sizes for better blending.
+        # Zone pairs (even + odd) must sum to 720/num_zones degrees to cover full 360°
+        # (e.g., 60° for 12 zones, 120° for 6 zones)
+        zone_pair_angle = 720 / num_zones
         percentage_off = min(dist_1, dist_adj) / max(dist_1, dist_adj) if dist_adj != 0 else 0
-        even_angle = percentage_off * 60  # Primary color zone angle (0-60 degrees)
-        odd_angle = 60 - even_angle  # Secondary color zone angle
+        even_angle = percentage_off * zone_pair_angle  # Primary color zone angle
+        odd_angle = zone_pair_angle - even_angle  # Secondary color zone angle
 
         # Calculate areas for each zone type (used for secondary color selection)
         # Area of a circular sector: A = 0.5 * r^2 * theta
-        even_area = 6 * (0.5 * hex_radius * hex_radius * math.radians(even_angle))
-        odd_area = 6 * (0.5 * hex_radius * hex_radius * math.radians(odd_angle))
+        num_zone_pairs = num_zones // 2
+        even_area = num_zone_pairs * (0.5 * hex_radius * hex_radius * math.radians(even_angle))
+        odd_area = num_zone_pairs * (0.5 * hex_radius * hex_radius * math.radians(odd_angle))
         layer_area = even_area + odd_area
 
         # Select secondary color that best approximates target when mixed with primary

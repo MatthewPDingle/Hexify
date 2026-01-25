@@ -507,12 +507,13 @@ def process_single(
 
         logger.debug(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
-        # Create processor
+        # Create processor with full settings
         processor = HexagonProcessor(
             num_palette_colors=settings.num_palette_colors,
             num_processes=args.jobs,
             chunk_size=settings.chunk_size,
             save_hexagons=args.save_hexagons,
+            settings=settings,
         )
 
         # Setup progress bar if available and not disabled
