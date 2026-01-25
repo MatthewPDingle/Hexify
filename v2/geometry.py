@@ -8,22 +8,27 @@ This module handles all geometric calculations:
 - Coordinate transformations between input and output spaces
 """
 
-import numpy as np
+import logging
+from typing import List, Tuple
+
 import cv2
-import math
+import numpy as np
 from matplotlib.patches import RegularPolygon
 from matplotlib.path import Path
 
 from .config import (
-    HEX_SCALE_FACTOR,
-    HEX_WIDTH,
     HEX_HEIGHT,
-    HEX_RADIUS,
     HEX_HORIZONTAL_SPACING,
-    HEX_VERTICAL_SPACING,
-    HEX_ORIENTATION,
     HEX_NUM_VERTICES,
+    HEX_ORIENTATION,
+    HEX_RADIUS,
+    HEX_SCALE_FACTOR,
+    HEX_VERTICAL_SPACING,
+    HEX_WIDTH,
 )
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class HexagonGrid:

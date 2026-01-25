@@ -11,25 +11,49 @@ Modules:
     geometry: Hexagon grid and mask operations
     layers: Multi-layer hexagon pattern rendering
     processor: Main orchestration class
+    exceptions: Custom exception classes
 
 Usage:
     from v2 import HexagonProcessor
 
     processor = HexagonProcessor(num_palette_colors=16)
     output = processor.process_image(input_image)
+
+Exceptions:
+    HexifyError: Base exception for all Hexify errors
+    InvalidImageError: Raised when input image format is invalid
+    PaletteError: Raised when palette operations fail
 """
 
-from .processor import HexagonProcessor
 from .color import ColorPalette
+from .exceptions import (
+    GridError,
+    GridNotSetupError,
+    HexifyError,
+    InsufficientColorsError,
+    InvalidImageError,
+    PaletteError,
+    PaletteNotGeneratedError,
+)
 from .geometry import HexagonGrid, HexagonMask
 from .layers import LayerRenderer
+from .processor import HexagonProcessor
 
 __all__ = [
+    # Main classes
     'HexagonProcessor',
     'ColorPalette',
     'HexagonGrid',
     'HexagonMask',
     'LayerRenderer',
+    # Exceptions
+    'HexifyError',
+    'InvalidImageError',
+    'PaletteError',
+    'PaletteNotGeneratedError',
+    'InsufficientColorsError',
+    'GridError',
+    'GridNotSetupError',
 ]
 
-__version__ = '2.0.0'
+__version__ = '2.1.0'

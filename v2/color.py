@@ -11,16 +11,23 @@ colors from a limited palette by strategically mixing two palette colors in
 varying proportions across angular zones.
 """
 
-import numpy as np
-import cv2
 import hashlib
+import logging
+from typing import List, Optional, Tuple
+
+import cv2
+import numpy as np
 from sklearn.cluster import KMeans
 
 from .config import (
-    MAX_PALETTE_SAMPLE_PIXELS,
-    KMEANS_RANDOM_STATE,
+    BRIGHTNESS_THRESHOLD,
     KMEANS_N_INIT,
+    KMEANS_RANDOM_STATE,
+    MAX_PALETTE_SAMPLE_PIXELS,
 )
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class ColorPalette:
@@ -89,7 +96,9 @@ class ColorPalette:
         # Generate hash for cache key generation (identifies this specific palette)
         self.palette_hash = hashlib.sha256(self.colors.tobytes()).hexdigest()
 
-    def closest_color(self, target_rgb: np.ndarray, avoid_colors: list = None) -> np.ndarray:
+    def closest_color(
+        self, target_rgb: np.ndarray, avoid_colors: Optional[List[np.ndarray]] = None
+    ) -> np.ndarray:
         """
         Find the closest palette color to a target color.
 
@@ -203,7 +212,7 @@ class ColorPalette:
         return best_secondary
 
 
-def get_background_color(avg_rgb: np.ndarray) -> tuple:
+def get_background_color(avg_rgb: np.ndarray) -> Tuple[int, int, int]:
     """
     Determine background color (black or white) based on average brightness.
 
@@ -216,7 +225,6 @@ def get_background_color(avg_rgb: np.ndarray) -> tuple:
     Returns:
         Background color as tuple (R, G, B) - either (0, 0, 0) or (255, 255, 255)
     """
-    from .config import BRIGHTNESS_THRESHOLD
     brightness = np.mean(avg_rgb)
     if brightness < BRIGHTNESS_THRESHOLD:
         return (255, 255, 255)  # Dark colors get white background
@@ -234,5 +242,4 @@ def get_background_value(avg_rgb: np.ndarray) -> int:
     Returns:
         0 for black background, 255 for white background
     """
-    from .config import BRIGHTNESS_THRESHOLD
     return 0 if np.mean(avg_rgb) >= BRIGHTNESS_THRESHOLD else 255

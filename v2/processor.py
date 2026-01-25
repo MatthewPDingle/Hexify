@@ -11,20 +11,24 @@ The processor handles parallelization, caching, and image I/O, delegating
 the actual rendering work to the specialized components.
 """
 
-import numpy as np
-import cv2
+import logging
 import os
-import matplotlib.pyplot as plt
-from multiprocessing import Manager
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Manager
+from typing import List, Optional, Tuple
 
-from .config import (
-    DEFAULT_CHUNK_SIZE,
-    HEX_SCALE_FACTOR,
-)
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+
 from .color import ColorPalette
+from .config import DEFAULT_CHUNK_SIZE
+from .exceptions import InvalidImageError
 from .geometry import HexagonGrid, HexagonMask, average_color
 from .layers import LayerRenderer
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class HexagonProcessor:
@@ -51,8 +55,8 @@ class HexagonProcessor:
     def __init__(
         self,
         num_palette_colors: int = 16,
-        num_processes: int = None,
-        hexagons_dir: str = None,
+        num_processes: Optional[int] = None,
+        hexagons_dir: Optional[str] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         save_hexagons: bool = True
     ):
@@ -116,6 +120,40 @@ class HexagonProcessor:
         """
         self.grid.setup(input_shape)
 
+    def _validate_image(self, image: np.ndarray) -> None:
+        """
+        Validate that the input image has the correct format.
+
+        Args:
+            image: Image to validate
+
+        Raises:
+            InvalidImageError: If the image format is invalid
+        """
+        if not isinstance(image, np.ndarray):
+            raise InvalidImageError(
+                f"Expected numpy array, got {type(image).__name__}",
+                shape=None
+            )
+
+        if image.ndim != 3:
+            raise InvalidImageError(
+                f"Expected 3D array (H, W, C), got {image.ndim}D array",
+                shape=image.shape
+            )
+
+        if image.shape[2] != 3:
+            raise InvalidImageError(
+                f"Expected 3 channels (RGB), got {image.shape[2]} channels",
+                shape=image.shape
+            )
+
+        if image.shape[0] < 1 or image.shape[1] < 1:
+            raise InvalidImageError(
+                f"Image dimensions must be positive, got {image.shape[:2]}",
+                shape=image.shape
+            )
+
     def process_image(self, input_image: np.ndarray, pbar=None) -> np.ndarray:
         """
         Process an input image to generate hexagonal pattern output.
@@ -129,16 +167,27 @@ class HexagonProcessor:
 
         Returns:
             Output image as numpy array, HEX_SCALE_FACTOR times larger
+
+        Raises:
+            InvalidImageError: If the input image has invalid format
         """
+        # Validate input
+        self._validate_image(input_image)
+        logger.info(f"Processing image with shape {input_image.shape}")
+
         self.input_image = input_image
 
         # Generate palette if not already done
         if not self._palette_generated:
+            logger.debug("Generating color palette...")
             self.generate_palette(input_image)
+            logger.debug(f"Palette generated with {self.num_palette_colors} colors")
 
         # Set up grid if not already done
         if self.grid.hex_centers is None:
+            logger.debug("Setting up hexagon grid...")
             self.setup_hexagon_grid(input_image.shape)
+            logger.debug(f"Grid created with {len(self.grid.hex_centers)} hexagons")
 
         return self._process_hexagons(pbar)
 
@@ -163,6 +212,9 @@ class HexagonProcessor:
             for i in range(0, len(self.grid.hex_centers), self.chunk_size)
         ]
 
+        logger.info(f"Processing {len(self.grid.hex_centers)} hexagons in {len(hex_center_chunks)} chunks")
+        logger.debug(f"Using {self.num_processes} worker processes")
+
         with ProcessPoolExecutor(max_workers=self.num_processes) as executor:
             futures = [
                 executor.submit(self._process_hexagon_chunk, chunk)
@@ -181,9 +233,12 @@ class HexagonProcessor:
                 if pbar:
                     pbar.update(self.chunk_size)
 
+        logger.info(f"Processing complete. Cache hit rate: {self.get_cache_hit_rate():.1%}")
         return output_image
 
-    def _process_hexagon_chunk(self, centers: list) -> list:
+    def _process_hexagon_chunk(
+        self, centers: List[Tuple[int, int]]
+    ) -> List[Optional[Tuple[int, int, int, int, np.ndarray, np.ndarray]]]:
         """
         Process a chunk of hexagons.
 

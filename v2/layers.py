@@ -18,25 +18,31 @@ alternating between two colors. The ratio of zone sizes determines the visual
 color blend, approximating any target color using only palette colors.
 """
 
-import numpy as np
-import cv2
+import logging
 import math
+from typing import Dict, List, Tuple
+
+import cv2
+import numpy as np
 from matplotlib.patches import RegularPolygon
 
+from .color import ColorPalette, get_background_color
 from .config import (
-    HEX_ORIENTATION,
-    HEX_NUM_VERTICES,
-    NUM_LAYERS,
-    NUM_ZONES,
-    HEX_SCALE_FACTOR,
-    LAYER_6_MAX_DIAMETER,
-    LAYER_6_MIN_DIAMETER,
-    INNER_LAYER_DIAMETER_RANGE,
     BRIGHTNESS_THRESHOLD,
     FLOAT_EPSILON,
+    HEX_NUM_VERTICES,
+    HEX_ORIENTATION,
+    HEX_SCALE_FACTOR,
+    INNER_LAYER_DIAMETER_RANGE,
+    LAYER_6_MAX_DIAMETER,
+    LAYER_6_MIN_DIAMETER,
+    NUM_LAYERS,
+    NUM_ZONES,
 )
 from .geometry import HexagonMask, average_color, clip_point_to_hexagon
-from .color import ColorPalette, get_background_color
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class LayerRenderer:
