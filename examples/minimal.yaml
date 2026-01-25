@@ -1,0 +1,30 @@
+# Hexify Minimal Preset
+# Ultra-simplified style for artistic effects
+# Creates bold, graphic patterns with minimal detail
+
+# Geometry settings
+hex_width: 256
+hex_scale_factor: 16
+num_layers: 4          # Minimal layers for bold look
+num_zones: 6           # Simple angular divisions
+orientation: flat_top
+
+# Color settings - fast and simple
+color_space: rgb
+quantization_method: minibatch_kmeans
+num_palette_colors: 6   # Very limited palette for poster effect
+
+# K-means settings
+kmeans_random_state: 42
+kmeans_n_init: 5
+max_palette_sample_pixels: 250000
+
+# Style settings
+border_width: 0
+border_color: [0, 0, 0]
+
+# Processing settings
+chunk_size: 200
+
+# Brightness settings
+brightness_threshold: 128

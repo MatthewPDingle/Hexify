@@ -1,1 +1,43 @@
-Hexify/Ilya/ 
+Hexify/Ilya/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Type checking
+.mypy_cache/
+
+# Linting
+.ruff_cache/
+
+# pytest
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

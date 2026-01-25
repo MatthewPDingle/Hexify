@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hexify"
+version = "2.1.0"
+description = "Generate hexagonal pattern art from images"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.20",
+    "opencv-python>=4.5",
+    "matplotlib>=3.5",
+    "scikit-learn>=1.0",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-benchmark", "pre-commit", "mypy", "ruff"]
+yaml = ["pyyaml>=6.0"]
+
+[project.scripts]
+hexify = "v2.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]  # Line length handled separately
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

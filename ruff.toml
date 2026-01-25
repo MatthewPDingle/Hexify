@@ -1,0 +1,16 @@
+# Standalone ruff configuration
+# Note: These settings are also defined in pyproject.toml
+# This file provides a standalone config for running ruff directly
+
+line-length = 100
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]  # Line length handled separately
+
+[format]
+# Use double quotes for strings
+quote-style = "double"
+# Indent with spaces
+indent-style = "space"
