@@ -226,13 +226,8 @@ Examples:
         metavar="N",
         help="Number of concentric layers (default: 7)",
     )
-    style_group.add_argument(
-        "--zones",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Number of angular zones (default: 12)",
-    )
+    # NOTE: --zones removed because the algorithm's triangular cap geometry
+    # was designed specifically for 12 zones. Other values produce incorrect results.
     style_group.add_argument(
         "--border-width",
         type=int,
@@ -394,8 +389,7 @@ def load_settings(args: argparse.Namespace, logger: logging.Logger) -> HexifySet
         settings_dict["num_palette_colors"] = args.colors
     if args.layers is not None:
         settings_dict["num_layers"] = args.layers
-    if args.zones is not None:
-        settings_dict["num_zones"] = args.zones
+    # NOTE: zones is always 12 - the algorithm doesn't support other values
     if args.chunk_size is not None:
         settings_dict["chunk_size"] = args.chunk_size
     if args.border_width is not None:

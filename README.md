@@ -165,7 +165,6 @@ Options:
   -j, --jobs INT         Number of parallel processes
   -p, --preset NAME      Use preset: default, fast, detailed, minimal
   --layers INT           Number of concentric layers (default: 7)
-  --zones INT            Number of angular zones (default: 12)
   --border-width INT     Border width in pixels (0 = none)
   --border-color R,G,B   Border color as comma-separated RGB
   --config FILE          Load settings from YAML/JSON file

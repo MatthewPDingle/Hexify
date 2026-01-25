@@ -141,8 +141,7 @@ class TestArgumentParser:
         args = parser.parse_args(["input.png", "--layers", "5"])
         assert args.layers == 5
 
-        args = parser.parse_args(["input.png", "--zones", "18"])
-        assert args.zones == 18
+        # NOTE: --zones was removed because the algorithm only supports 12 zones
 
         args = parser.parse_args(["input.png", "--border-width", "2"])
         assert args.border_width == 2
